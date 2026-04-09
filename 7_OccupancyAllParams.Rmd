@@ -1,0 +1,212 @@
+---
+title: "Untitled"
+author: "Zellmer"
+date: "2025-06-02"
+output: word_document
+---
+
+```{r}
+
+# Read and rbind all the CSV files
+all_params <- read.csv("../Output/all_parameters.csv")
+
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(broom)
+library(ggplot2)
+
+m2_params <- all_params %>% 
+  filter(Model == "m2" & Treatment != "human")
+
+params_wide <- m2_params %>%
+  select(Species, parameter, City, Threshold, Est) %>%
+  pivot_wider(names_from = Threshold, values_from = Est, names_prefix = "Thresh_")
+
+```
+
+## How many cities did we have successful models in at each threshold for each species
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+thresh_levels <- c(seq(0, 0.9, 0.1), 0.99)
+
+counts_by_thresh <- params_wide %>%
+  pivot_longer(starts_with("Thresh_"),
+               names_to = "ThreshName", values_to = "val") %>%
+  mutate(Threshold = as.numeric(str_extract(ThreshName, "(?<=Thresh_)[0-9]+(?:\\.[0-9]+)?"))) %>%
+  filter(!is.na(Threshold)) %>%
+  # sum across *all* cities: no City in the grouping
+  group_by(Species, Threshold) %>%
+  summarise(n_non_na = sum(!is.na(val))/5, .groups = "drop") %>%
+  complete(Species, Threshold = thresh_levels, fill = list(n_non_na = 0)) %>%
+  mutate(Threshold = factor(Threshold, levels = thresh_levels))
+
+ggplot(counts_by_thresh, aes(x = Threshold, y = n_non_na)) +
+  geom_col(width = 0.85) +
+  facet_wrap(~ Species) +
+  labs(x = "Threshold", y = "Number of Cities") +
+  theme_bw(base_size = 14)
+
+
+```
+
+
+```{r}
+
+#drop city x species that have any NAs within any threshold
+params_wide <- drop_na(params_wide)
+
+diffs <- params_wide %>%
+  mutate(across(starts_with("Thresh_"), ~ . - Thresh_0, .names = "diff_{.col}")) %>%
+  select(Species, parameter, City, starts_with("diff_"))
+
+diffs_long <- diffs %>%
+  pivot_longer(cols = starts_with("diff_"),
+               names_to = "Threshold",
+               names_prefix = "diff_",
+               values_to = "Diff") %>%
+  mutate(Threshold = gsub("Thresh_", "", Threshold))
+
+results <- diffs_long %>%
+  filter(Threshold != "0") %>%
+  group_by(Species, parameter, Threshold) %>%
+  summarise(
+    n   = n(),
+    n_non_na  = sum(!is.na(Diff)),
+    t_test    = list(if (n_non_na >= 2) t.test(na.omit(Diff), mu = 0) else NULL),
+    .groups = "drop"
+  ) %>%
+  mutate(tidy_out = map(t_test, tidy)) %>%
+  unnest(tidy_out, names_sep = "_") %>%
+  select(
+    Species, parameter, Threshold, n,
+    estimate = tidy_out_estimate,
+    statistic = tidy_out_statistic,
+    p.value = tidy_out_p.value,
+    conf.low = tidy_out_conf.low,
+    conf.high = tidy_out_conf.high
+  )
+
+# Add a column to flag significance
+results <- results %>%
+  mutate(significant = p.value < 0.05)
+
+results <- subset(results, n > 8 &
+                    Species != "Domestic dog" &
+                    Species != "Domestic cat")
+
+results$Species <- gsub("Eastern g", "G", results$Species)
+
+# Plot
+ggplot(results, aes(x = Threshold, y = estimate, shape = significant)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.1) +
+  facet_grid(parameter ~ Species, scales = "free_y") +
+  scale_shape_manual(values = c(`TRUE` = 19, `FALSE` = 1)) +  # solid vs open
+  theme_bw() +
+  labs(
+    x = "Threshold",
+    y = "Difference from Threshold 0",
+    shape = "p < 0.05"
+  )
+
+ggsave("../Output/ttest.jpg", height=8.5, width=13, units="in", dpi=600)
+
+coyote <- subset(results, Species == "Coyote")
+
+ggplot(coyote, aes(x = Threshold, y = estimate, shape = significant)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.1) +
+  facet_grid(parameter ~ Species, scales = "free_y") +
+  scale_shape_manual(values = c(`TRUE` = 19, `FALSE` = 1)) +  # solid vs open
+  theme_bw() +
+  labs(
+    x = "Threshold",
+    y = "Difference from Threshold 0",
+    shape = "p < 0.05"
+  )
+
+ggsave("../Output/ttest_coyote.jpg", height=2.5, width=13, units="in", dpi=600)
+```
+
+
+
+```{r}
+# Set your top-level directory
+top_dir <- "../Input Data"
+
+# Find all files named 'model_parameters.csv' recursively
+file_list <- list.files(path = top_dir, pattern = "_cleaned\\.csv$", 
+                        full.names = TRUE, recursive = TRUE)
+
+# Read and rbind all the CSV files
+all_photos <- lapply(file_list, read.csv, stringsAsFactors = FALSE)
+
+# View the result
+head(all_photos[1])
+
+# Get number of rows in each data frame
+row_counts <- sapply(all_photos, nrow)
+
+# Total number of rows across all data frames
+total_rows <- sum(row_counts)
+
+# View the results
+row_counts  # rows per file
+total_rows  # total rows
+
+library(dplyr)
+
+# Combine all data frames, filling in missing columns
+combined_photos <- bind_rows(all_photos)
+
+
+```
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# Define thresholds
+thresholds <- c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.99)
+
+# For each threshold, count how many rows have maxDetectionConf >= threshold
+conf_summary <- data.frame(
+  Threshold = thresholds,
+  NumPhotos = sapply(thresholds, function(t) {
+    sum(combined_photos$maxDetectionConf >= t, na.rm = TRUE)
+  })
+)
+
+thresh_0.1 <- 1-conf_summary[2,2]/conf_summary[1,2]
+thresh_0.1_numphotos <- conf_summary[1,2]-conf_summary[2,2]
+
+# Plot
+ggplot(conf_summary, aes(x = Threshold, y = NumPhotos)) +
+  geom_hline(yintercept = 0.75*max(conf_summary$NumPhotos),
+             linetype = "dashed")+
+  geom_hline(yintercept = 0.5*max(conf_summary$NumPhotos),
+             linetype = "dashed")+
+  geom_hline(yintercept = 0.25*max(conf_summary$NumPhotos),
+             linetype = "dashed")+
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  labs(x = "Confidence Threshold",
+       y = "Number of Photos") +
+  theme_bw() +
+  scale_y_continuous(limits = c(0, max(conf_summary$NumPhotos + 100000)),
+                     expand = c(0, 0))
+
+ggsave("../Output/NumPhotos.jpg", height=5, width=5, units="in", dpi=600)
+
+```
+
+

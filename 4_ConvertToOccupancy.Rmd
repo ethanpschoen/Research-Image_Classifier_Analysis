@@ -1,0 +1,469 @@
+---
+title: "ConvertToOccupancy"
+output: html_document
+date: "2025-05-31"
+---
+
+This file generates the species occupancy reports for occupancy modeling
+At the end, it also runs the occupancy models
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(purrr)
+library(rmarkdown)
+library(stringr)
+library(ggplot2)
+library(forcats)
+library(googlesheets4)
+
+```
+
+```{r}
+
+# Specifying input and output paths
+input_path <- "../Input Data/"
+report_output_path <- "../Species Occupancy/"
+
+if (dir.exists(output_path) == F) {
+  dir.create(output_path)
+}
+
+# Import file, change filepath/name as necessary
+df <- read.csv(paste0(input_path, "multi_city_data_cleaned.csv"))
+
+# Import file, change filepath/name as necessary
+active_dates <- read.csv(paste0(input_path, "all_city_active_dates.csv"))
+
+```
+
+```{r}
+
+# Format before was FALSE for inactive, TRUE for active. Converts FALSE to NA and TRUE to 0 (will update to 1 if present)
+active_dates <- active_dates %>%
+  mutate(across(starts_with("Day_"), ~ ifelse(. == FALSE, NA, 0))) %>%
+  arrange(Season)
+
+# If PACA, remove the first 4 characters to match the df locAbbr names
+active_dates <- active_dates %>%
+  mutate(locAbbr = ifelse(
+    City == "PACA",
+    substr(locAbbr, 5, nchar(locAbbr)),
+    locAbbr
+  ))
+
+# TODO: update seasons?
+# Dataframe with season information
+season_dates <- data.frame(
+  Season = 1:35,
+  start_date = as.Date(c("2015-12-18",
+                         "2016-03-18", "2016-06-17", "2016-09-17", "2016-12-18",
+                         "2017-03-18", "2017-06-17", "2017-09-17", "2017-12-18",
+                         "2018-03-18", "2018-06-17", "2018-09-17", "2018-12-18", 
+                         "2019-03-18", "2019-06-17", "2019-09-17", "2019-12-18", 
+                         "2020-03-18", "2020-06-17", "2020-09-17", "2020-12-18", 
+                         "2021-03-18", "2021-06-17", "2021-09-17", "2021-12-18", 
+                         "2022-03-18", "2022-06-17", "2022-09-17", "2022-12-18", 
+                         "2023-03-18", "2023-06-17", "2023-09-17", "2023-12-18", 
+                         "2024-03-18", "2024-06-17")),
+  end_date = as.Date(c("2016-02-14", "2016-05-14", "2016-08-14", "2016-11-14",
+                       "2017-02-14", "2017-05-14", "2017-08-14", "2017-11-14",
+                       "2018-02-14", "2018-05-14", "2018-08-14", "2018-11-14",
+                       "2019-02-13", "2019-05-14", "2019-08-14", "2019-11-14", 
+                       "2020-02-13", "2020-05-14", "2020-08-14", "2020-11-14", 
+                       "2021-02-13", "2021-05-14", "2021-08-14", "2021-11-14", 
+                       "2022-02-13", "2022-05-14", "2022-08-14", "2022-11-14", 
+                       "2023-02-13", "2023-05-14", "2023-08-14", "2023-11-14", 
+                       "2024-02-13", "2024-05-14", "2024-08-14"))
+)
+
+# Converts Timestamp to proper date, combines with season_dates to add relative_days column (what day of the season)
+df <- df %>%
+  mutate(Timestamp = ymd_hms(Timestamp)) %>%
+  left_join(season_dates, by = "Season") %>%
+  mutate(relative_days = as.integer(difftime(Timestamp, start_date, units = "days")) + 1) %>%
+  select(-start_date)
+
+```
+
+```{r}
+
+# Create header
+header_df <- season_dates %>%
+  rename("Season Legend:" = "Season", "Start Date" = "start_date", "End Date" = "end_date")
+
+# Adds empty line of header to make margin before data
+end_header_text <- data.frame(
+  Season = "",
+  Start = "",
+  End = ""
+)
+
+# Combines headers
+header <- bind_rows(header_df, end_header_text)
+
+# Outputs file
+write.csv(header, paste0(report_output_path, "header.csv"), row.names = FALSE)
+
+```
+
+```{r}
+
+# TODO: update species group file?
+# Get species group mapping from Google Sheets "Species Groups"
+species_groups_file <- range_read("https://docs.google.com/spreadsheets/d/1czht5zz8dRII25loY9RI9efTi6vIsvsioSqXBgIwuvg/edit?gid=0#gid=0", trim_ws = FALSE)
+
+# Change format such that Subspecies (commonName in df) maps to SpeciesGroup
+species_map <- species_groups_file %>%
+  pivot_longer(
+    cols = -1,
+    names_to = "SubCol",
+    values_to = "Subspecies"
+  ) %>%
+  filter(!is.na(Subspecies), Subspecies != "") %>%
+  rename(SpeciesGroup = 1) %>%
+  select(SpeciesGroup, Subspecies)
+
+# Map commonName to SpeciesGroup value
+df <- df %>%
+  left_join(species_map, by = c("commonName" = "Subspecies")) %>%
+  filter(SpeciesGroup != "DELETE" | is.na(SpeciesGroup)) %>%
+  mutate(commonName = coalesce(SpeciesGroup, commonName)) %>%
+  filter(!is.na(commonName)) %>%
+  select(-SpeciesGroup)
+
+species_list <- unique(df$commonName)
+
+print(species_list)
+
+write.csv(species_list, paste0(output_path, "species_list.csv"), row.names = FALSE)
+
+```
+
+```{r}
+
+# Dataframe for tracking site-seasons for human vs. md for each species
+species_counts <- data.frame(
+  species = character(),
+  source = character(),
+  count = integer(),
+  stringsAsFactors = FALSE
+)
+
+# Track amount of images after MD "removes" them below the threshold
+total_images <- data.frame(
+  threshold = numeric(),
+  count = integer()
+)
+
+# List of different species
+species_list <- unique(df$commonName)
+
+# City names
+cities <- unique(df$City)
+
+# Confidence threshold
+confs <- c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.99)
+
+# If these commonName not desired, uncomment
+exclude <- c("Human", "Empty", "Unknown")
+
+```
+
+```{r}
+
+# Iterate through each confidence threshold
+for (thresh in confs) {
+  # Count number of images at current threshold
+  cur_count <- data.frame(
+    threshold = thresh,
+    count = nrow(df %>% filter(maxDetectionConf >= thresh))
+  )
+  # Combine into whole dataframe
+  total_images <- rbind(total_images, cur_count)
+  
+  # For each city
+  for (city in cities) {
+    # Filter down to current city
+    city_active_dates <- active_dates %>%
+      filter(City == city)
+    
+    city_df <- df %>%
+      filter(City == city)
+    
+    # Define path to directory
+    folder_path <- paste0(report_output_path, city, "/")
+    
+    # Create directory if not already existing
+    if (dir.exists(folder_path) == F) {
+      dir.create(folder_path)
+    }
+    
+    folder_path <- paste0(folder_path, "Conf. Thresh. ", thresh, "/")
+    
+    if (dir.exists(folder_path) == F) {
+      dir.create(folder_path)
+    }
+    
+    # Iterate through each species
+    for (species in species_list) {
+      if (species %in% exclude) {
+        next
+      }
+      # TODO: use thresh 0 as df_human
+      # Subsets to only current species
+      df_human <- city_df %>%
+        filter(commonName == species)
+      
+      # New dataframe that excludes images below confidence threshold
+      if (thresh == 0) {
+        df_md <- df_human
+      } else {
+        df_md <- df_human %>%
+          filter(maxDetectionConf >= thresh)
+      }
+    
+      # List of dataframes to iterate through
+      dfs <- list(df_human = df_human, df_md = df_md)
+      
+      # Creates empty list to add dataframes to
+      results_list <- list()
+      
+      # For each dataframe
+      for (df_name in names(dfs)) {
+        # Reset cur_grid (where each section is hosted and then appended to total results)
+        cur_grid <- city_active_dates %>%
+          mutate(commonName = species)
+        
+        # Define df_cur to current dataframe
+        df_cur <- dfs[[df_name]]
+        
+        # Ignore if species wasn't observed
+        if (nrow(df_cur) > 0) {
+          # For each entry in dataframe
+          for (i in 1:nrow(df_cur)) {
+            # Get values of interest
+            season <- df_cur$Season[i]
+            relative_day <- df_cur$relative_day[i]
+            site <- df_cur$locAbbr[i]
+            location <- df_cur$City[i]
+            
+            # Get name of day column
+            day_column_name <- paste0("Day_", relative_day)
+            
+            # Put 1 for an observation
+            cur_grid[cur_grid$Season == season & cur_grid$locAbbr == site & cur_grid$City == location, day_column_name] <- 1
+          }
+        }
+        
+        # TODO: update target species?
+        # Select which cities to observe across thresholds
+        if (species %in% c("Bird", "Black bear", "Bobcat", "Coyote", "Domestic cat", 
+                           "Lizard", "Mule deer", "Rabbit", "Raccoon", "Rodent", "Squirrel/Chipmunk", 
+                           "Striped Skunk", "Virginia opossum") && city == "PACA") {
+          # Count number of site-seasons where species was observed
+          site_seasons <- apply(cur_grid[, grep("^Day_", names(cur_grid))], 1, 
+                                function(row) as.integer(any(row == 1, na.rm = TRUE)))
+          
+          # Put count in correct column format
+          if (df_name == "df_human") {
+            species_counts <- rbind(species_counts, 
+                                    data.frame(species = species,
+                                               source = df_name, count = sum(site_seasons)))
+          } else {
+            species_counts <- rbind(species_counts, 
+                                    data.frame(species = species, 
+                                               source = paste0(df_name, " (", thresh, ")"), 
+                                               count = sum(site_seasons)))
+          }
+        }
+        
+        # Add column specifying source
+        updated_grid <- cur_grid %>%
+          mutate(Treatment = df_name)
+        
+        # Change locAbbr name for script, can't have duplicate location names
+        if (df_name == "df_md") {
+          updated_grid$locAbbr <- paste0(updated_grid$locAbbr, "md")
+        }
+        
+        # Add dataframe to list
+        results_list[[df_name]] <- updated_grid
+      }
+    
+      # Bind list (puts MD data below Human data) and add it to city dataframe
+      complete_grid <- bind_rows(results_list)
+      
+      # Order and name columns
+      complete_grid <- complete_grid %>%
+        rename("Species" = "commonName", "SeasonNumber" = "Season", "Site" = "locAbbr") %>%
+        select(Species, SeasonNumber, City, Site, Latitude, Longitude, starts_with("Day_"), Treatment)
+      
+      # TODO: is this still necessary?
+      # Change species name for file naming
+      species_name <- gsub("/", "-", species)
+      
+      # Filepath specification
+      output_filename <- paste0(folder_path, "OccupancyReport - ", species_name, " - Seasonal.csv")
+      
+      # Output file for each species
+      write.csv(complete_grid, output_filename, row.names = FALSE)
+    }
+  }
+}
+
+```
+
+```{r}
+
+occupancy_output_path <- "../Output/"
+
+# Plot total number of images at each threshold
+ggplot(total_images, aes(x = factor(threshold), y = count, group=1)) + 
+  geom_line(color = "steelblue", size = 1) + 
+  geom_point(color = "steelblue", size = 3) +
+  labs(x = "Threshold", y = "Total Images", title = "Images per Threshold") + 
+  theme_minimal()
+
+ggsave(paste0(occupancy_output_path, "images_per_threshold.jpg"), height=5, width=5, units="in", dpi=600)
+
+# TODO: Iterate through below plot for each city?
+
+# Remove duplicates
+species_counts <- distinct(species_counts) %>%
+  filter(source != "df_md (0)")
+
+# Order by highest to least count of species site-season observations
+species_order <- species_counts %>%
+  filter(source == "df_human") %>%
+  arrange(desc(count)) %>%
+  pull(species)
+
+# Apply order to species_counts, reverse for plotting
+species_counts <- species_counts %>%
+  mutate(species = factor(species, levels = rev(species_order)))
+
+# Specify order for key
+desired_order <- c("df_human", paste0("df_md (", sprintf("%.1f", seq(0.1, 0.9, 0.1)), ")"), "df_md (0.99)")
+
+species_counts <- species_counts %>%
+  mutate(source = factor(source, levels = rev(desired_order)))  # rev() makes df_human appear at the top
+
+# TODO: simplify this?
+# Plot site-seasons against species and their human vs. md data
+count_plot <- ggplot(
+  species_counts, aes(x = count, y = species, fill = source)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7)) +
+  labs(
+    title = "Number of Site-Seasons with Detections by Source",
+    x = "Number of Site-Seasons",
+    y = "Species",
+    fill = "Source"
+  ) +
+  guides(fill = guide_legend(reverse = TRUE)) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.background = element_rect(fill = "white", color = "black"),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_line(color = "gray80"),
+    panel.grid.minor = element_line(color = "gray90"),
+    axis.title = element_text(color = "black", size = 20),
+    axis.text = element_text(color = "black", size = 12),
+    legend.position = "top",
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 16),
+    plot.title = element_text(hjust = 0.5, size = 24),
+    plot.margin = margin(t = 10, r = 20, b = 10, l = 10)
+  )
+
+# Save plot
+ggsave(filename = paste0(occupancy_output_path, "detection_by_treatment.png"), 
+       plot = count_plot, 
+       width = 16, 
+       height = 16,
+       dpi = 300
+)
+
+```
+
+```{r}
+
+exclude <- c("Human", "Empty", "Unknown")
+
+# TODO: is this still necessary? or is error handling working?
+# NOTES: 
+# Species with no observations at the city will not be modeled
+# These specified species have some data but not enough, causing errors in modeling
+PACA_skip <- c("Snake", "Western Toad", "Horse", "Fox squirrel")
+AUTX_skip <- c("Insect", "Snake", "Duck", "Turtle", "Gray fox")
+BOMA_skip <- c()
+CHIL_skip <- c("Gray fox", "Snake", "Duck", "Red fox", "Flying squirrel", "North american beaver", 
+               "Weasel", "Woodchuck", "American mink", "Rodent")
+ICIA_skip <- c("Bobcat", "Insect", "Flying squirrel", "muskrat", "American mink", 
+               "American Badger")
+ININ_skip <- c("Skunk", "Rodent", "Eastern gray squirrel", "Turtle", "Chipmunk", 
+               "North american beaver", "muskrat", "American Badger", "Red fox", 
+               "American mink", "Red squirrel")
+JAMS_skip <- c("Skunk", "Rodent", "Snake", "Squirrel-Chipmunk", "Fox squirrel")
+SLMO_skip <- c("Rodent", "Gray fox", "Insect", "Horse", "Duck", "Canada Goose", 
+               "Chipmunk")
+TAWA_skip <- c("Bobcat", "Squirrel-Chipmunk", "Fox squirrel", "Weasel", "Western gray squirrel", "Mountain Beaver", 
+               "Chipmunk")
+URIL_skip <- c("Weasel")
+
+filepath = "../"
+
+# TODO: remove day/week & all/middle logic?
+# For each confidence threshold
+for (threshold in confs) {
+  # For each city
+  for (location in cities) {
+    # For considering by day and by week
+    for (data_by in c("Day", "Week")) {
+      if (data_by == "Day") {
+        next
+      }
+      # For considering all dates or just middle dates
+      for (data_range in c("All", "Middle")) {
+        if (data_range == "Middle") {
+          next
+        }
+        # For each species...
+        for (name in species_list) {
+          # Skip if part of exclude list
+          if (name %in% exclude) {
+            next
+          }
+          # Print current process
+          print(paste(name, data_range, data_by, location, threshold))
+          
+          # Get desired data for city, threshold, species
+          species_data <- read.csv(paste0(report_output_path, location, 
+                                          "/Conf. Thresh. ", threshold, 
+                                          "/OccupancyReport - ", name, " - Seasonal.csv"))
+          # Get day columns from data
+          day_cols <- grep("^Day_", names(species_data), value = TRUE)
+          # If no observations made for species, skip
+          if (!any(species_data[, day_cols] == 1, na.rm = TRUE)) {
+            message(paste("Skipping", name, "- no detections in any day column"))
+            next
+          }
+          
+          # Run "Occupancy Modeling.Rmd" with current species and specification
+          tryCatch({
+            render(paste0(filepath, "R Files/Occupancy Modeling.Rmd"), 
+                   params = list(path = filepath, sp_name = name, range = data_range, 
+                                 by = data_by, city = location, conf = threshold))
+          }, error = function(e) {
+            message(paste("Error in rendering for", name, "in", location, "with threshold", threshold, ":", e$message))
+          })
+        }
+      }
+    }
+  }
+}
+
+```
+

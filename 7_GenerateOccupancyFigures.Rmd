@@ -1,0 +1,194 @@
+---
+title: "GenerateModelFigures"
+output: html_document
+date: "2025-06-01"
+---
+
+```{r}
+
+# TODO: add comments
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(purrr)
+library(rmarkdown)
+library(stringr)
+library(ggplot2)
+library(forcats)
+library(tidyverse)
+
+```
+
+```{r}
+
+cities <- c("CHIL")
+species_list <- c("Coyote", "Squirrel-Chipmunk", "Gray squirrel")
+thresholds <- c(0.5, 0.8, 0.99)
+
+filepath <- "../"
+
+```
+
+```{r}
+
+estimates <- data.frame(
+  city <- character(),
+  species <- character(),
+  threshold <- numeric(),
+  estimate <- numeric(),
+  lower <- numeric(),
+  upper <- numeric(),
+  Impervious <- integer(),
+  Treatment <- character()
+)
+
+for (city in cities) {
+  for (species in species_list) {
+    for (confidence in thresholds) {
+      # render(paste0(filepath, "R Files/Occupancy Modeling.Rmd"),
+      #        params = list(path = filepath, sp_name = species, range = "All",
+      #                      by = "Week", city = "PACA", conf = confidence))
+      
+      cur_df <- read.csv(paste0(filepath, "Output/", city, "/Conf. ", confidence, "/Results - ", species, "/", species, "_m2_md_Predictions.csv"))
+      
+      cur_df["city"] <- city
+      cur_df["species"] <- species
+      cur_df["threshold"] <- confidence
+      
+      estimates <- rbind(estimates, cur_df)
+    }
+    
+    human_df <- read.csv(paste0(filepath, "Output/", city, "/Conf. 0.99/Results - ", species, "/", species, "_m2_human_Predictions.csv"))
+    
+    human_df["city"] <- city
+    human_df["species"] <- species
+    human_df["threshold"] <- 0
+    
+    estimates <- rbind(estimates, human_df)
+  }
+}
+
+```
+
+```{r}
+
+output_path <- paste0(filepath, "Output/")
+
+for (location in cities) {
+  for (name in species_list) {
+    species_estimates <- estimates %>%
+      filter(species == name, city == location)
+    
+    species_estimates <- species_estimates %>%
+      mutate(threshold = as.factor(threshold)) %>%
+      arrange(threshold, Impervious)
+    
+    ggplot()+
+      geom_line(data=species_estimates, 
+                  aes(x=Impervious, y=estimate, color=threshold, group=threshold))+
+      geom_ribbon(data=species_estimates,
+                  aes(x=Impervious, ymin=lower,ymax=upper, fill=threshold, group=threshold), alpha=0.25)+
+      scale_color_manual(values=c("dodgerblue", "firebrick", "red", "mistyrose"))+
+      scale_fill_manual(values=c("dodgerblue", "firebrick", "red", "mistyrose"))+
+      theme_bw()+
+      ylab("Occupancy")+
+      xlab("Impervious Cover (%)")+
+      ggtitle(name)+
+      ylim(0,1)
+    
+    ggsave(paste0(output_path, location, "/", name, "_estimates.jpg"), units="in", height=4, width=5, dpi=600)
+  }
+}
+
+```
+
+```{r}
+
+cities <- c("PACA", "CHIL")
+output_path <- "../Output/"
+
+for (city in cities) {
+  city_output <- paste0(output_path, city, "/")
+  if (dir.exists(city_output) == F) {
+    next
+  }
+  
+  model_path <- paste0(city_output, "best_model.csv")
+  if (file.exists(model_path) == F) {
+    next
+  }
+  
+  model_file <- read.csv(model_path)
+  
+  complete_species <- model_file %>%
+    group_by(Species) #%>%
+    # filter(n_distinct(Threshold) == 11) %>%
+    # ungroup()
+  
+  ggplot(complete_species, aes(x = Threshold, y = Species, fill = model)) +
+    geom_tile(color = "white") +
+    scale_fill_manual(values = c("m1" = "#1b9e77", "m2" = "#d95f02")) +
+    theme_bw(base_size = 12) +
+    labs(
+      x = "Threshold",
+      y = "Species",
+      fill = "Best Model",
+      title = "Model Performance Across Thresholds"
+    )
+  
+  ggsave(paste0(city_output, "best_model.jpg"))
+  
+  results_file <- read.csv(paste0(city_output, "model_results.csv"))
+  
+  m2_results <- results_file %>%
+    filter(model == "m2") #%>%
+    # group_by(Species) %>%
+    # filter(n_distinct(Threshold) == 11) %>%
+    # ungroup()
+  
+  # ggplot(m2_results, aes(x = Threshold, y = AICwt, color = Species)) +
+  #   geom_point(size = 2, alpha = 0.7) +
+  #   geom_line() +
+  #   coord_cartesian(ylim = c(0, 1)) +
+  #   theme_bw(base_size = 12) +
+  #   labs(
+  #     x = "Threshold",
+  #     y = "AIC Weight for Model 2",
+  #     color = "Species",
+  #     title = "Support for Model 2 Across Thresholds by Species"
+  #   )
+  
+  # ggplot(m2_results, aes(x = Threshold, y = AICwt)) +
+  #   geom_point(size = 2, alpha = 0.7, color = "#1b9e77") +
+  #   geom_line(color = "#1b9e77") +
+  #   coord_cartesian(ylim = c(0, 1)) +
+  #   facet_wrap(~ Species) +
+  #   theme_bw(base_size = 12) +
+  #   labs(
+  #     x = "Threshold",
+  #     y = "AIC Weight for Model 2",
+  #     title = "Model 2 Support Across Thresholds by Species"
+  #   )
+  
+  m2_results %>%
+    mutate(color_group = ifelse(AICwt > 0.5, "AICwt > 0.5", "AICwt ≤ 0.5")) %>%
+    ggplot(aes(x = Threshold, y = AICwt)) +
+    geom_point(aes(color = color_group), size = 2, alpha = 0.8) +
+    geom_line(aes(group = Species), color = "gray70", alpha = 0.6) +
+    scale_color_manual(values = c("AICwt > 0.5" = "#d95f02", "AICwt ≤ 0.5" = "#1b9e77")) +
+    coord_cartesian(ylim = c(0, 1)) +
+    facet_wrap(~ Species) +
+    theme_bw(base_size = 12) +
+    labs(
+      x = "Threshold",
+      y = "AIC Weight for Model 2",
+      color = "Model 2 Support",
+      title = "Model 2 AIC Weight Across Thresholds by Species"
+    )
+  
+  ggsave(paste0(city_output, "m2_support.jpg"))
+}
+
+```
+

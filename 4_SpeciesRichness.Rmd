@@ -1,0 +1,570 @@
+---
+title: "Species Richness"
+authors: "Occidental Computational Biology Lab"
+date: "Updated: 2025-09-16"
+output: pdf_document
+---
+
+This file runs the species richness models
+
+```{r}
+
+# TODO: add comments
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(iNEXT)
+library(terra)
+library(googlesheets4)
+
+```
+
+
+## Load Photo Database Files
+
+```{r}
+
+load_file <- function(file, city) {
+  photos <- file %>%
+    rename("Species" = "commonName")
+  
+  if (city == "PACA") photos$locAbbr2 <- gsub("[0-9]", "", photos$locAbbr)
+  else photos$locAbbr2 <- photos$locAbbr
+  
+  return(photos)
+}
+
+```
+
+
+```{r}
+
+# TODO: remove lat/long?
+merge_latlong <- function(file, location_file, city) {
+  if (city == "PACA") {
+    return(file)
+  }
+  
+  merged_location <- file %>%
+    left_join(
+      location_file %>%
+        select(City, locAbbr, Longitude, Latitude),
+      by = c("City", "locAbbr"),
+      suffix = c("", "_active")
+    ) %>%
+    mutate(
+      Longitude = coalesce(Longitude, Longitude_active),
+      Latitude = coalesce(Latitude, Latitude_active)
+    ) %>%
+    select(-Longitude_active, -Latitude_active) %>%
+    drop_na(Longitude, Latitude)
+  
+  return(merged_location)
+}
+
+```
+
+## Filter by threshold
+
+```{r}
+
+filter_threshold <- function(file, threshold) {
+  file <- file %>%
+    filter(maxDetectionConf >= threshold)
+  return(file)
+}
+
+```
+
+## Convert Timestamp Column to Datetime Format
+
+```{r}
+
+convert_timestamp <- function(file) {
+  file$TimestampUTC <- file$Timestamp
+  file$TimestampUTC <- as.POSIXct(file$TimestampUTC,
+                                           format="%Y-%m-%dT%H:%M:%OSZ", tz="UTC")
+  
+  # Extract month
+  file$Month <- format(file$TimestampUTC, format="%m")
+  
+  # Extract year-month
+  file$YearMonth <- format(file$TimestampUTC, format="%Y-%m")
+  
+  return(file)
+}
+
+```
+
+## Split photos into species detections
+- Some photos have multiple species detections. This splits them into separate rows, one for each species detected in the photo.
+
+```{r}
+
+split_photos <- function(file) {
+  # Step 1: Separate out rows that contain underscores
+  with_underscores <- file %>%
+    filter(grepl("_", Species))
+  
+  # Step 2: For each of those rows, split Species into multiple rows
+  split_rows <- with_underscores %>%
+    mutate(row_id = row_number()) %>%  # add ID to track original rows
+    separate_rows(Species, sep = "_")  # split into multiple rows by "_"
+  
+  # Step 3: Keep rows without underscores
+  without_underscores <- file %>%
+    filter(!grepl("_", Species))
+  
+  # Step 4: Combine all together
+  spp_detections <- bind_rows(without_underscores, split_rows) %>%
+    select(-row_id)  # remove temp ID column if desired
+  
+  # TODO: is this necessary?
+  rm(without_underscores)
+  rm(split_rows)
+  
+  return(spp_detections)
+}
+
+```
+
+## Bind Species ID Data to Species Detection Data
+- This allows us to categorize species into taxonomic groups
+
+```{r}
+
+combine_species_data <- function(file, species_groups_file) {
+  # TODO: update species file format?
+  # Change format such that Subspecies (commonName in df) maps to SpeciesGroup
+  species_map <- species_groups_file %>%
+    pivot_longer(
+      cols = -1,
+      names_to = "SubCol",
+      values_to = "Subspecies"
+    ) %>%
+    filter(!is.na(Subspecies), Subspecies != "") %>%
+    rename(SpeciesGroup = 1) %>%
+    select(SpeciesGroup, Subspecies)
+  
+  # Map commonName to SpeciesGroup value
+  file <- file %>%
+    left_join(species_map, by = c("Species" = "Subspecies")) %>%
+    filter(SpeciesGroup != "DELETE" | is.na(SpeciesGroup)) %>%
+    mutate(Species = coalesce(SpeciesGroup, Species)) %>%
+    filter(!is.na(Species)) %>%
+    select(-SpeciesGroup)
+  
+  print(unique(file$Species))
+  
+  return(file)
+}
+
+```
+
+## Filter out Human and Empty Photos
+```{r}
+
+filter_species <- function(file) {
+  file <- subset(file,
+                   Species != "Empty" &
+                   Species != "Human" &
+                   Species != "Unknown" &
+                   Species != "Bird" &
+                   Species != "Domestic cat" &
+                   Species != "Domestic dog" &
+                   Species != "Horse" &
+                   Species != "Insect" &
+                   Species != "Lizard" &
+                   Species != "Rodent" &
+                   Species != "Snake" &
+                   Species != "Amphibians" &
+                   Species != "Turtle"
+                   # TODO: add more species to exclude
+                 )
+  
+  return(file)
+}
+
+```
+
+## Species Stats
+- Species Richness Raw: Total number of different species
+- Note this includes cannot ID categories
+
+```{r}
+
+total_species <- function(file) {
+  print(length(unique(file$Species)))
+}
+
+```
+
+## Create Directories for Each Camera Site
+
+```{r}
+
+create_dirs <- function(file, output_path) {
+  site_list <- c("ALL", unique(file$locAbbr2))
+  for(i in site_list){
+    dir.create(paste0(output_path, "Sites/", i), recursive = TRUE, showWarnings = FALSE)
+  }
+  
+  return(site_list)
+}
+
+```
+
+Bar chart of number of observations of each species
+
+```{r}
+
+num_observations <- function(site_list, file, output_path) {
+  for(i in site_list){
+    plot_data <- if(i == "ALL") file else subset(file, locAbbr2 == i)
+    
+    ggplot()+
+      geom_bar(data=plot_data, aes(x=fct_infreq(Species)))+
+      theme_bw(base_size=6)+
+      coord_flip()+
+      xlab("Species")+
+      ylab("Number of Photos")
+    
+    ggsave(paste0(output_path, "Sites/", i, "/species_freq_all.jpg"), units = "in", dpi = 600)
+  }
+}
+
+```
+
+###########################
+
+## Species Accumulation Curve
+
+<https://rpubs.com/brouwern/iNEXTvVEGAN> <https://www.researchgate.net/post/How_do_I_generate_a_species_accumulation_curve_based_on_sampling_effort_for_a_camera-trap_study_using_R>
+
+## By abundance
+
+```{r}
+
+species_accumulation_curve <- function(site_list, file, output_path) {
+  for(i in site_list){
+    print(i)
+    species.vec1 <- if(i == "ALL") file else subset(file, locAbbr2 == i)
+    
+    if(nrow(species.vec1) > 0) {
+      species.vec <- table(species.vec1$Species) ##abundance
+      
+      # TODO: look into Season as variable
+      abundance.out.inext <- iNEXT(as.vector(species.vec), q=0, datatype="abundance")
+      
+      results <- abundance.out.inext$AsyEst
+      results$`Total Observations` <- sum(species.vec)
+      
+      write.csv(results, paste0(output_path, "Sites/", i, "/species_richness_abun.csv"), row.names=T, quote=F)
+      
+      ggiNEXT(abundance.out.inext, type=1, facet.var="None")+
+        theme_bw()+
+        scale_x_continuous(expand = c(0, 0)) + #, limits = c(0, 62)
+        ylim(0, 20) + #scale_y_continuous(expand = c(0, 20)) + #, 
+        xlab("Number of spp_detections") +
+        #ylab("Species diversity") +
+        #labs(title= "Species Accumulation Curve")+
+        scale_color_manual(values="mediumorchid")+
+        scale_fill_manual(values="mediumorchid")+ 
+        theme(legend.title=element_blank(), 
+              legend.position = "bottom",
+              strip.background = element_blank(),
+              axis.title.y = element_text(size = 12),
+              axis.title.x = element_text(size = 12))
+      
+      ggsave(paste0(output_path, "Sites/", i, "/species_richness_abun.jpg"), height=5, width=8, units = "in", dpi = 600)
+    }
+  }
+}
+
+```
+
+
+```{r}
+
+combine_results <- function(output_path) {
+  # Recursively find all files named "species_richness_abun.csv"
+  files <- list.files(path = output_path, 
+                      pattern = "^species_richness_abun\\.csv$", 
+                      recursive = TRUE, 
+                      full.names = TRUE)
+  
+  # Read all files, add a Site column, and combine them
+  all_data <- do.call(rbind, lapply(files, function(f) {
+    # Extract site name from parent folder
+    site <- basename(dirname(f))
+    
+    # Read CSV file
+    df <- read.csv(f, stringsAsFactors = FALSE)
+    
+    # Add Site column
+    df$Site <- site
+    
+    return(df)
+  }))
+  
+  return(all_data)
+}
+
+```
+
+# Open up the impervious surfaces dataset from NLCD
+<URL>
+## Merge Imperviousness with Richness
+
+```{r}
+
+merge_impervious <- function(file, impervious_file, richness_file, output_path) {
+  # TODO: remove this and draw impervious from extracted file
+  cameraSites <- unique(file[c("locAbbr", "locAbbr2", "Longitude", "Latitude")])
+  cameraSites_v <- vect(cameraSites, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
+  
+  cameraSites_v <- project(cameraSites_v, crs(impervious_file))
+  
+  cameraBuffers <- buffer(cameraSites_v, width = 1000)
+  impervious_crop <- crop(impervious_file, cameraBuffers)
+  
+  extractImpBuf <- terra::extract(impervious_crop[[1]], cameraBuffers, fun="mean")
+  
+  cameraSites$Impervious <- extractImpBuf[,2]
+  
+  cameraSites2 <- aggregate(Impervious ~ locAbbr2, data = cameraSites, mean, na.rm = TRUE)
+
+  site_data <- merge(richness_file, cameraSites2, by.x = "Site", by.y = "locAbbr2")
+  write.csv(site_data, paste0(output_path, "richness.csv"), quote=F, row.names=F)
+  
+  return(site_data)
+}
+
+```
+
+
+```{r}
+
+evaluate_results <- function(file, output_path) {
+  ggplot(data=file, aes(x=Impervious, y=Estimator))+
+    geom_point()+
+    stat_smooth(method="lm")+
+    facet_wrap(.~X, scales="free_y")+
+    theme_bw()
+  
+  ggsave(paste0(output_path, "Impervious x Diversity.jpg"))
+  
+  ggplot(data=subset(file, X == "Species Richness"), aes(x=Impervious, y=Estimator))+
+    geom_point()+
+    stat_smooth(method="lm")+
+    facet_wrap(.~X, scales="free_y")+
+    theme_bw()
+  
+  ggsave(paste0(output_path, "Impervious x Richness.jpg"))
+  
+  lm.out <- lm(Estimator ~ Impervious, data=file, subset = X == "Species Richness")
+  
+  coef_table <- summary(lm.out)$coefficients
+  coef_df <- as.data.frame(coef_table)
+  coef_df$Term <- rownames(coef_df)
+  rownames(coef_df) <- NULL
+  colnames(coef_df) <- c("Estimate", "Std_Error", "t_value", "p_value", "Term")
+  coef_df <- coef_df %>%
+    select(Term, Estimate, Std_Error, t_value, p_value)
+  
+  write.csv(coef_df, paste0(output_path, "lm_results.csv"), quote=F, row.names=F)
+}
+
+```
+
+## Iterate over all cities and thresholds, using functions defined above
+
+```{r}
+
+cities <- c(
+  "AUTX",
+  "CHIL",
+  "ICIA",
+  "ININ",
+  "JAMS",
+  "PACA",
+  "SLMO",
+  "TAWA",
+  "URIL"
+)
+thresholds <- c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.99)
+
+active_dates <- read.csv("../Input Data/multi_city_active_dates.csv")
+
+# Get species group mapping from Google Sheets "Species Groups"
+species_groups <- range_read("https://docs.google.com/spreadsheets/d/1czht5zz8dRII25loY9RI9efTi6vIsvsioSqXBgIwuvg/edit?gid=0#gid=0", trim_ws = FALSE)
+
+impervious <- rast("../Input Data/Annual_NLCD_FctImp_2024_CU_C1V1.tif")
+
+richness_path <- "../Richness/"
+
+for (city_name in cities) {
+  all_photos <- read.csv(paste0("../Input Data/photo_database_fin_", city_name, "_cleaned.csv"))
+  for (threshold_value in thresholds[[1]]) {
+    output_path_name <- paste0(richness_path, city_name, "/Conf. ", threshold_value, "/")
+    
+    print(paste("City:", city_name))
+    print(paste("Threshold:", threshold_value))
+
+    photos <- load_file(all_photos, city_name)
+    merged <- merge_latlong(photos, active_dates, city_name)
+    filtered <- filter_threshold(merged, threshold_value)
+    converted <- convert_timestamp(filtered)
+    split <- split_photos(converted)
+    combined <- combine_species_data(split, species_groups)
+    exclude <- filter_species(combined)
+    total_species(exclude)
+    sites <- create_dirs(exclude, output_path_name)
+    num_observations(sites, exclude, output_path_name)
+    species_accumulation_curve(sites, exclude, output_path_name)
+    richness <- combine_results(output_path_name)
+    with_impervious <- merge_impervious(exclude, impervious, richness, output_path_name)
+    evaluate_results(with_impervious, output_path_name)
+  }
+}
+
+```
+
+# Collect all results within city across thresholds
+
+```{r}
+
+for (city_name in cities) {
+  city_results <- data.frame(
+    City = character(),
+    Threshold = numeric(),
+    Term = character(),
+    Estimate = numeric(),
+    Std_Error = numeric(),
+    t_value = numeric(),
+    p_value = numeric()
+  )
+  
+  city_richness_results <- data.frame(
+    City = character(),
+    Threshold = numeric(),
+    Site = character(),
+    X = numeric(),
+    Estimator = numeric(),
+    Est_s.e. = numeric(),
+    X95..Lower = numeric(),
+    X95..Upper = numeric(),
+    Total.Observations = numeric(),
+    Impervious = numeric()
+  )
+  
+  for (threshold_value in thresholds) {
+    output_path_name <- paste0(richness_path, city_name, "/Conf. ", threshold_value, "/")
+    
+    # Read the linear model results for this threshold
+    results_path <- paste0(output_path_name, "lm_results.csv")
+    
+    richness_path <- paste0(output_path_name, "richness.csv")
+    
+    if (file.exists(results_path) == F) {
+      next
+    }
+    
+    if (file.exists(richness_path) == F) {
+      next
+    }
+    
+    cur_file <- read.csv(results_path)
+    
+    cur_file$City <- city_name
+    cur_file$Threshold <- threshold_value
+    
+    city_results <- rbind(city_results, cur_file)
+    
+    cur_richness_file <- read.csv(richness_path)
+    
+    cur_richness_file$City <- city_name
+    cur_richness_file$Threshold <- threshold_value
+    
+    city_richness_results <- rbind(city_richness_results, cur_richness_file)
+  }
+  
+  city_results <- city_results %>%
+    select(City, Threshold, Term, Estimate, Std_Error, t_value, p_value)
+  
+  city_richness_results <- city_richness_results %>%
+    select(City, Threshold, Site, X, Estimator, Est_s.e., X95..Lower, X95..Upper, Total.Observations, Impervious)
+  
+  city_path <- paste0(richness_path, city_name, "/")
+  
+  write.csv(city_results, paste0(city_path, "lm_results_all_thresholds.csv"), quote=F, row.names=F)
+  
+  write.csv(city_richness_results, paste0(city_path, "richness_all_thresholds.csv"), quote=F, row.names=F)
+}
+
+```
+
+# Collect all results across cities
+
+```{r}
+
+all_results <- data.frame(
+  City = character(),
+  Threshold = numeric(),
+  Term = character(),
+  Estimate = numeric(),
+  Std_Error = numeric(),
+  t_value = numeric(),
+  p_value = numeric()
+)
+
+all_richness_results <- data.frame(
+  City = character(),
+    Threshold = numeric(),
+    Site = character(),
+    X = numeric(),
+    Estimator = numeric(),
+    Est_s.e. = numeric(),
+    X95..Lower = numeric(),
+    X95..Upper = numeric(),
+    Total.Observations = numeric(),
+    Impervious = numeric()
+)
+
+for (city_name in cities) {
+  city_path <- paste0(richness_path, city_name, "/")
+  
+  results_path <- paste0(city_path, "lm_results_all_thresholds.csv")
+  
+  richness_path <- paste0(city_path, "richness_all_thresholds.csv")
+  
+  if (file.exists(results_path) == F) {
+    next
+  }
+  
+  if (file.exists(richness_path) == F) {
+    next
+  }
+  
+  cur_file <- read.csv(results_path)
+  
+  all_results <- rbind(all_results, cur_file)
+  
+  cur_richness_file <- read.csv(richness_path)
+  
+  all_richness_results <- rbind(all_richness_results, cur_richness_file)
+}
+
+all_results <- all_results %>%
+  select(City, Threshold, Term, Estimate, Std_Error, t_value, p_value)
+
+all_richness_results <- all_richness_results %>%
+  select(City, Threshold, Site, X, Estimator, Est_s.e., X95..Lower, X95..Upper, Total.Observations, Impervious)
+
+write.csv(all_results, paste0(richness_path, "lm_results_all_cities.csv"), quote=F, row.names=F)
+
+write.csv(all_richness_results, paste0(richness_path, "richness_all_cities.csv"), quote=F, row.names=F)
+
+```
