@@ -1,44 +1,24 @@
-This file converts the multi-city active dates file into the correct format
+This file standardizes activity histories, clusters nearby sites, and writes
+all-city active dates plus site impervious metadata.
 
 ```{r}
-
 # TODO: add comments
 
 library(dplyr)
 library(tidyr)
-
-old_activity <- read.csv("../Input Data/zellmer_observation_history.csv")
-
-new_activity <- old_activity %>%
-  rename("locAbbr" = "Site", "Longitude" = "Long", "Latitude" = "Lat") %>%
-  filter("City" != "mela")
-
-new_activity$City[new_activity$City == "autx"] <- "AUTX"
-new_activity$City[new_activity$City == "boma"] <- "BOMA"
-new_activity$City[new_activity$City == "chil"] <- "CHIL"
-new_activity$City[new_activity$City == "inin"] <- "ININ"
-new_activity$City[new_activity$City == "ioio"] <- "ICIA"
-new_activity$City[new_activity$City == "jams"] <- "JAMS"
-new_activity$City[new_activity$City == "slmo"] <- "SLMO"
-new_activity$City[new_activity$City == "tawa"] <- "TAWA"
-new_activity$City[new_activity$City == "uril"] <- "URIL"
-
-new_activity <- new_activity[new_activity$locAbbr != "LAC2", ]
-new_activity <- new_activity[new_activity$locAbbr != "SSP2", ]
-new_activity$Latitude = ifelse(
-  new_activity$locAbbr == "P-TE2",
-  new_activity$Latitude * 10,
-  new_activity$Latitude
-)
+library(lubridate)
+library(sf)
+library(igraph)
+library(terra)
 
 ```
 
 ```{r}
 
-# TODO: update seasons?
-# Defines seasons
+input_path <- "../Input Data/"
+
 season_dates <- data.frame(
-  Season = 1:35,
+  Season = 1:41,
   season_name = c("JA16", "AP16", "JU16", "OC16",
                   "JA17", "AP17", "JU17", "OC17",
                   "JA18", "AP18", "JU18", "OC18",
@@ -47,61 +27,229 @@ season_dates <- data.frame(
                   "JA21", "AP21", "JU21", "OC21",
                   "JA22", "AP22", "JU22", "OC22",
                   "JA23", "AP23", "JU23", "OC23",
-                  "JA24", "AP24", "JU24"),
+                  "JA24", "AP24", "JU24", "OC24",
+                  "JA25", "AP25", "JU25", "OC25",
+                  "JA26"),
   start_date = as.Date(c("2015-12-18",
                          "2016-03-18", "2016-06-17", "2016-09-17", "2016-12-18",
                          "2017-03-18", "2017-06-17", "2017-09-17", "2017-12-18",
-                         "2018-03-18", "2018-06-17", "2018-09-17", "2018-12-18", 
-                         "2019-03-18", "2019-06-17", "2019-09-17", "2019-12-18", 
-                         "2020-03-18", "2020-06-17", "2020-09-17", "2020-12-18", 
-                         "2021-03-18", "2021-06-17", "2021-09-17", "2021-12-18", 
-                         "2022-03-18", "2022-06-17", "2022-09-17", "2022-12-18", 
-                         "2023-03-18", "2023-06-17", "2023-09-17", "2023-12-18", 
-                         "2024-03-18", "2024-06-17")),
+                         "2018-03-18", "2018-06-17", "2018-09-17", "2018-12-18",
+                         "2019-03-18", "2019-06-17", "2019-09-17", "2019-12-18",
+                         "2020-03-18", "2020-06-17", "2020-09-17", "2020-12-18",
+                         "2021-03-18", "2021-06-17", "2021-09-17", "2021-12-18",
+                         "2022-03-18", "2022-06-17", "2022-09-17", "2022-12-18",
+                         "2023-03-18", "2023-06-17", "2023-09-17", "2023-12-18",
+                         "2024-03-18", "2024-06-17", "2024-09-17", "2024-12-18",
+                         "2025-03-18", "2025-06-17", "2025-09-17", "2025-12-18")),
   end_date = as.Date(c("2016-02-14", "2016-05-14", "2016-08-14", "2016-11-14",
                        "2017-02-14", "2017-05-14", "2017-08-14", "2017-11-14",
                        "2018-02-14", "2018-05-14", "2018-08-14", "2018-11-14",
-                       "2019-02-13", "2019-05-14", "2019-08-14", "2019-11-14", 
-                       "2020-02-13", "2020-05-14", "2020-08-14", "2020-11-14", 
-                       "2021-02-13", "2021-05-14", "2021-08-14", "2021-11-14", 
-                       "2022-02-13", "2022-05-14", "2022-08-14", "2022-11-14", 
-                       "2023-02-13", "2023-05-14", "2023-08-14", "2023-11-14", 
-                       "2024-02-13", "2024-05-14", "2024-08-14"))
+                       "2019-02-13", "2019-05-14", "2019-08-14", "2019-11-14",
+                       "2020-02-13", "2020-05-14", "2020-08-14", "2020-11-14",
+                       "2021-02-13", "2021-05-14", "2021-08-14", "2021-11-14",
+                       "2022-02-13", "2022-05-14", "2022-08-14", "2022-11-14",
+                       "2023-02-13", "2023-05-14", "2023-08-14", "2023-11-14",
+                       "2024-02-13", "2024-05-14", "2024-08-14", "2024-11-14",
+                       "2025-02-13", "2025-05-14", "2025-08-14", "2025-11-14",
+                       "2026-02-13"))
 )
 
-for(name in season_dates$season_name) {
-  new_activity$Season[new_activity$Season == name] <- season_dates$Season[season_dates$season_name == name]
-}
+all_day_cols <- paste0("Day_", 1:60)
 
-new_activity$Season <- as.integer(new_activity$Season)
+```
 
-site_info <- new_activity %>%
+```{r}
+
+multi_city_raw <- read.csv(paste0(input_path, "zellmer_observation_history.csv"))
+
+multi_city_activity <- multi_city_raw %>%
+  rename(locAbbr = Site, Longitude = Long, Latitude = Lat) %>%
+  filter(City != "mela") %>%
+  mutate(
+    City = recode(
+      City,
+      autx = "AUTX", boma = "BOMA", chil = "CHIL", inin = "ININ",
+      ioio = "ICIA", jams = "JAMS", slmo = "SLMO", tawa = "TAWA", uril = "URIL"
+    )
+  )
+
+multi_city_activity <- multi_city_activity[multi_city_activity$locAbbr != "LAC2", ]
+multi_city_activity <- multi_city_activity[multi_city_activity$locAbbr != "SSP2", ]
+multi_city_activity$Latitude = ifelse(
+  multi_city_activity$locAbbr == "P-TE2",
+  multi_city_activity$Latitude * 10,
+  multi_city_activity$Latitude
+)
+
+season_lookup <- setNames(season_dates$Season, season_dates$season_name)
+multi_city_activity$Season <- as.integer(unname(season_lookup[multi_city_activity$Season]))
+
+site_info_multi <- multi_city_activity %>%
   select(City, locAbbr, Longitude, Latitude) %>%
   distinct(City, locAbbr, .keep_all = TRUE)
 
-complete_rows <- expand_grid(
-  locAbbr = unique(new_activity$locAbbr),
+complete_rows_multi <- expand_grid(
+  locAbbr = unique(multi_city_activity$locAbbr),
   Season = season_dates$Season
 ) %>%
-  left_join(site_info, by = "locAbbr") %>%
-  filter(City %in% new_activity$City)
+  left_join(site_info_multi, by = "locAbbr") %>%
+  filter(City %in% multi_city_activity$City)
 
-```
-
-```{r}
-
-df_complete <- complete_rows %>%
-  left_join(new_activity, by = c("Season", "City", "locAbbr", "Latitude", "Longitude"))
-
-```
-
-```{r}
-
-df_complete <- df_complete %>%
-  mutate(across(starts_with("Day_"), ~ ifelse(is.na(.), FALSE, TRUE))) %>%
+multi_city_complete <- complete_rows_multi %>%
+  left_join(multi_city_activity, by = c("Season", "City", "locAbbr", "Latitude", "Longitude")) %>%
+  mutate(across(starts_with("Day_"), ~ !is.na(.))) %>%
   select(Season, City, locAbbr, Latitude, Longitude, starts_with("Day_"))
 
-write.csv(df_complete, "../Input Data/multi_city_active_dates.csv", row.names = FALSE)
+missing_day_cols_multi <- setdiff(all_day_cols, names(multi_city_complete))
+for (col_name in missing_day_cols_multi) {
+  multi_city_complete[[col_name]] <- FALSE
+}
+
+multi_city_complete <- multi_city_complete %>%
+  select(Season, City, locAbbr, Latitude, Longitude, all_of(all_day_cols))
+
+```
+
+```{r}
+
+paca_raw <- read.csv(paste0(input_path, "OccupancyReport - Active Dates.csv"), skip = 2)
+paca_start_date <- as.Date("2018-09-15")
+
+paca_daily <- paca_raw %>%
+  mutate(across(starts_with("Day_"), ~ case_when(
+    is.na(.) ~ "Inactive",
+    . %in% c(0, 1) ~ "Active"
+  ))) %>%
+  pivot_longer(
+    cols = starts_with("Day_"),
+    names_to = "Day",
+    values_to = "Status"
+  ) %>%
+  mutate(
+    day_number = as.integer(gsub("Day_", "", Day)),
+    date = paca_start_date + days(day_number - 1),
+    Status = Status == "Active"
+  ) %>%
+  select(-Day, -day_number, -Season)
+
+get_season <- function(timestamp) {
+  idx <- which(timestamp >= season_dates$start_date & timestamp <= season_dates$end_date)
+  if (length(idx) == 0) {
+    return(NA)
+  }
+  season_dates$Season[idx[1]]
+}
+
+paca_by_season <- paca_daily %>%
+  mutate(Season = vapply(date, get_season, integer(1))) %>%
+  drop_na(Season) %>%
+  rename(locAbbr = Site) %>%
+  mutate(date = as.Date(date)) %>%
+  left_join(season_dates %>% select(Season, start_date), by = "Season") %>%
+  mutate(relative_day = as.integer(difftime(date, start_date, units = "days")) + 1) %>%
+  filter(relative_day >= 1 & relative_day <= 60) %>%
+  select(Season, locAbbr, Latitude, Longitude, relative_day, Status)
+
+paca_wide <- paca_by_season %>%
+  pivot_wider(names_from = relative_day, values_from = Status, names_prefix = "Day_") %>%
+  mutate(City = "PACA")
+
+site_info_paca <- paca_wide %>%
+  select(City, locAbbr, Longitude, Latitude) %>%
+  distinct(City, locAbbr, .keep_all = TRUE)
+
+complete_rows_paca <- expand_grid(
+  locAbbr = unique(paca_wide$locAbbr),
+  Season = season_dates$Season
+) %>%
+  left_join(site_info_paca, by = "locAbbr")
+
+paca_complete <- complete_rows_paca %>%
+  left_join(paca_wide, by = c("Season", "City", "locAbbr", "Latitude", "Longitude")) %>%
+  mutate(across(starts_with("Day_"), ~ ifelse(is.na(.), FALSE, .))) %>%
+  select(Season, City, locAbbr, Latitude, Longitude, starts_with("Day_"))
+
+missing_day_cols_paca <- setdiff(all_day_cols, names(paca_complete))
+for (col_name in missing_day_cols_paca) {
+  paca_complete[[col_name]] <- FALSE
+}
+
+paca_complete <- paca_complete %>%
+  select(Season, City, locAbbr, Latitude, Longitude, all_of(all_day_cols))
+
+```
+
+```{r}
+
+normalized_activity <- bind_rows(multi_city_complete, paca_complete)
+
+site_coords <- normalized_activity %>%
+  select(City, locAbbr, Longitude, Latitude) %>%
+  distinct(City, locAbbr, .keep_all = TRUE) %>%
+  mutate(site_key = paste(City, locAbbr, sep = "::"))
+
+sites_sf <- st_as_sf(site_coords, coords = c("Longitude", "Latitude"), crs = 4326)
+sites_utm <- st_transform(sites_sf, crs = 32611)
+
+neighbors <- st_is_within_distance(sites_utm, sites_utm, dist = 150)
+g <- make_empty_graph(n = nrow(sites_utm), directed = FALSE)
+
+for (i in seq_along(neighbors)) {
+  for (j in neighbors[[i]]) {
+    if (i < j) {
+      g <- add_edges(g, c(i, j))
+    }
+  }
+}
+
+site_coords$cluster_id <- components(g)$membership
+
+site_to_cluster <- site_coords %>%
+  group_by(cluster_id) %>%
+  mutate(locAbbr2 = first(locAbbr)) %>%
+  ungroup() %>%
+  select(City, locAbbr, locAbbr2, Longitude, Latitude)
+
+```
+
+```{r}
+
+cluster_activity <- normalized_activity %>%
+  left_join(site_to_cluster %>% select(City, locAbbr, locAbbr2), by = c("City", "locAbbr")) %>%
+  group_by(Season, City, locAbbr2) %>%
+  summarize(across(all_of(all_day_cols), ~ any(.x, na.rm = TRUE)), .groups = "drop") %>%
+  rename(locAbbr = locAbbr2) %>%
+  select(Season, City, locAbbr, all_of(all_day_cols))
+
+```
+
+```{r}
+
+cluster_points <- site_to_cluster %>%
+  group_by(locAbbr2) %>%
+  summarize(
+    Longitude = mean(Longitude, na.rm = TRUE),
+    Latitude = mean(Latitude, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+impervious_raster <- rast(paste0(input_path, "Annual_NLCD_FctImp_2024_CU_C1V1.tif"))
+cluster_points_v <- vect(cluster_points, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
+cluster_points_v <- project(cluster_points_v, crs(impervious_raster))
+cluster_buffers <- buffer(cluster_points_v, width = 1000)
+
+impervious_vals <- terra::extract(impervious_raster[[1]], cluster_buffers, fun = mean)
+cluster_points$Impervious <- impervious_vals[, 2]
+
+camera_sites_with_impervious <- site_to_cluster %>%
+  left_join(cluster_points %>% select(locAbbr2, Impervious), by = "locAbbr2")
+
+```
+
+```{r}
+
+write.csv(cluster_activity, paste0(input_path, "all_city_active_dates.csv"), row.names = FALSE)
+write.csv(camera_sites_with_impervious, paste0(input_path, "camera_sites_with_impervious.csv"), row.names = FALSE)
 
 ```
 

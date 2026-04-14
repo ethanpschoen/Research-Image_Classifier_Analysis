@@ -16,7 +16,6 @@ library(tidyr)
 library(ggplot2)
 library(forcats)
 library(iNEXT)
-library(terra)
 library(googlesheets4)
 
 ```
@@ -26,47 +25,23 @@ library(googlesheets4)
 
 ```{r}
 
-load_file <- function(file, city) {
+load_file <- function(file, city, camera_sites_file) {
   photos <- file %>%
     rename("Species" = "commonName")
   
-  if (city == "PACA") photos$locAbbr2 <- gsub("[0-9]", "", photos$locAbbr)
-  else photos$locAbbr2 <- photos$locAbbr
+  photos <- photos %>%
+    left_join(
+      camera_sites_file %>%
+        select(City, locAbbr, locAbbr2, Longitude, Latitude, Impervious),
+      by = c("City", "locAbbr")
+    ) %>%
+    drop_na(locAbbr2)
   
   return(photos)
 }
 
 ```
 
-
-```{r}
-
-# TODO: remove lat/long?
-merge_latlong <- function(file, location_file, city) {
-  if (city == "PACA") {
-    return(file)
-  }
-  
-  merged_location <- file %>%
-    left_join(
-      location_file %>%
-        select(City, locAbbr, Longitude, Latitude),
-      by = c("City", "locAbbr"),
-      suffix = c("", "_active")
-    ) %>%
-    mutate(
-      Longitude = coalesce(Longitude, Longitude_active),
-      Latitude = coalesce(Latitude, Latitude_active)
-    ) %>%
-    select(-Longitude_active, -Latitude_active) %>%
-    drop_na(Longitude, Latitude)
-  
-  return(merged_location)
-}
-
-```
-
-## Filter by threshold
 
 ```{r}
 
@@ -314,29 +289,16 @@ combine_results <- function(output_path) {
 
 ```
 
-# Open up the impervious surfaces dataset from NLCD
-<URL>
 ## Merge Imperviousness with Richness
 
 ```{r}
 
-merge_impervious <- function(file, impervious_file, richness_file, output_path) {
-  # TODO: remove this and draw impervious from extracted file
-  cameraSites <- unique(file[c("locAbbr", "locAbbr2", "Longitude", "Latitude")])
-  cameraSites_v <- vect(cameraSites, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
-  
-  cameraSites_v <- project(cameraSites_v, crs(impervious_file))
-  
-  cameraBuffers <- buffer(cameraSites_v, width = 1000)
-  impervious_crop <- crop(impervious_file, cameraBuffers)
-  
-  extractImpBuf <- terra::extract(impervious_crop[[1]], cameraBuffers, fun="mean")
-  
-  cameraSites$Impervious <- extractImpBuf[,2]
-  
-  cameraSites2 <- aggregate(Impervious ~ locAbbr2, data = cameraSites, mean, na.rm = TRUE)
+merge_impervious <- function(file, richness_file, output_path) {
+  camera_sites <- file %>%
+    select(locAbbr2, Impervious) %>%
+    distinct(locAbbr2, .keep_all = TRUE)
 
-  site_data <- merge(richness_file, cameraSites2, by.x = "Site", by.y = "locAbbr2")
+  site_data <- merge(richness_file, camera_sites, by.x = "Site", by.y = "locAbbr2")
   write.csv(site_data, paste0(output_path, "richness.csv"), quote=F, row.names=F)
   
   return(site_data)
@@ -396,26 +358,26 @@ cities <- c(
 )
 thresholds <- c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.99)
 
-active_dates <- read.csv("../Input Data/multi_city_active_dates.csv")
+camera_sites <- read.csv("../Input Data/camera_sites_with_impervious.csv")
 
 # Get species group mapping from Google Sheets "Species Groups"
 species_groups <- range_read("https://docs.google.com/spreadsheets/d/1czht5zz8dRII25loY9RI9efTi6vIsvsioSqXBgIwuvg/edit?gid=0#gid=0", trim_ws = FALSE)
 
-impervious <- rast("../Input Data/Annual_NLCD_FctImp_2024_CU_C1V1.tif")
-
 richness_path <- "../Richness/"
 
+all_photos <- read.csv(paste0("../Input Data/multi_city_data_cleaned.csv"))
+
 for (city_name in cities) {
-  all_photos <- read.csv(paste0("../Input Data/photo_database_fin_", city_name, "_cleaned.csv"))
-  for (threshold_value in thresholds[[1]]) {
+  city_photos <- all_photos %>%
+    filter(City == city_name)
+  for (threshold_value in thresholds) {
     output_path_name <- paste0(richness_path, city_name, "/Conf. ", threshold_value, "/")
     
     print(paste("City:", city_name))
     print(paste("Threshold:", threshold_value))
 
-    photos <- load_file(all_photos, city_name)
-    merged <- merge_latlong(photos, active_dates, city_name)
-    filtered <- filter_threshold(merged, threshold_value)
+    photos <- load_file(city_photos, city_name, camera_sites)
+    filtered <- filter_threshold(photos, threshold_value)
     converted <- convert_timestamp(filtered)
     split <- split_photos(converted)
     combined <- combine_species_data(split, species_groups)
@@ -425,7 +387,7 @@ for (city_name in cities) {
     num_observations(sites, exclude, output_path_name)
     species_accumulation_curve(sites, exclude, output_path_name)
     richness <- combine_results(output_path_name)
-    with_impervious <- merge_impervious(exclude, impervious, richness, output_path_name)
+    with_impervious <- merge_impervious(exclude, richness, output_path_name)
     evaluate_results(with_impervious, output_path_name)
   }
 }
