@@ -38,6 +38,25 @@ df <- read.csv(paste0(input_path, "multi_city_data_cleaned.csv"))
 # Import file, change filepath/name as necessary
 active_dates <- read.csv(paste0(input_path, "all_city_active_dates.csv"))
 
+# Import mapping from original site IDs to clustered site IDs
+site_map <- read.csv(paste0(input_path, "camera_sites_with_impervious.csv"))
+
+site_map <- site_map %>%
+  select(City, locAbbr, locAbbr2) %>%
+  mutate(
+    locAbbr = ifelse(City == "PACA", sub("^[^-]+-", "", locAbbr), locAbbr),
+    locAbbr2 = ifelse(City == "PACA", sub("^[^-]+-", "", locAbbr2), locAbbr2)
+  ) %>%
+  distinct(City, locAbbr, locAbbr2)
+
+# Align photo site IDs to clustered site IDs used in active_dates
+df <- df %>%
+  left_join(site_map, by = c("City", "locAbbr"))
+
+df <- df %>%
+  mutate(locAbbr = coalesce(locAbbr2, locAbbr)) %>%
+  select(-locAbbr2)
+
 ```
 
 ```{r}
