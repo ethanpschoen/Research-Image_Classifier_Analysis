@@ -29,10 +29,17 @@ load_file <- function(file, city, camera_sites_file) {
   photos <- file %>%
     rename("Species" = "commonName")
   
+  if (city == "PACA") {
+    camera_sites_file <- camera_sites_file %>%
+      mutate(
+        locAbbr = sub("^[^-]+-", "", locAbbr),
+        locAbbr2 = sub("^[^-]+-", "", locAbbr2)
+      )
+  }
+  
   photos <- photos %>%
     left_join(
-      camera_sites_file %>%
-        select(City, locAbbr, locAbbr2, Longitude, Latitude, Impervious),
+      camera_sites_file,
       by = c("City", "locAbbr")
     ) %>%
     drop_na(locAbbr2)
