@@ -50,7 +50,6 @@ for(city in cities) {
     Range = character(),
     By = character(),
     Threshold = numeric(),
-    Treatment = character(),
     model = character(),
     npar = numeric(),
     AIC = numeric(),
@@ -74,7 +73,6 @@ for(city in cities) {
     Range = character(),
     By = character(),
     Threshold = numeric(),
-    Treatment = character(),
     Model = character(),
     parameter = character(),
     Est = numeric(),
@@ -106,70 +104,63 @@ for(city in cities) {
           }
           
           # Specify path to draw data from
-          cur_path <- paste0(filepath, city, "/", "Conf. ", thresh, "/Results - ", species, "/")
+          cur_path <- paste0(filepath, city, "/Conf. ", thresh, "/Results - ", species, "/")
           
           # Skip if species wasn't modeled for that city, threshold
           if (dir.exists(cur_path) == F) {
             next
           }
           
-          # For human and md treated data
-          for (treatment in c(
-                              #"human",
-                              "md"
-                              )) {
-            model_file <- paste0(cur_path, species, "_AIC_", treatment, ".csv")
-            
-            if (file.exists(model_file) == F) {
-              next
-            }
-            
-            print(model_file)
-            
-            # Read in data
-            cur_file <- read.csv(model_file)
-            
-            # Input new data for dataframe
-            cur_file["Species"] <- species
-            # cur_file["Target"] <- species %in% target
-            cur_file["Range"] <- range
-            cur_file["By"] <- type
-            cur_file["City"] <- city
-            cur_file["Treatment"] <- treatment
-            cur_file["Threshold"] <- thresh
-            
-            # Add model data to general dataframe
-            df <- rbind(df, cur_file)
-            
-            best_row <- cur_file[which.min(cur_file$AIC), ]
-            best_model <- best_row$model
-            
-            row_out <- data.frame(
-              Species = species,
-              City = city,
-              Threshold = thresh,
-              model = best_model
-            )
-            
-            models_df <- rbind(models_df, row_out)
-            
-            parameters_file <- paste0(cur_path, species, "_Model_Estimates_", treatment, ".csv")
-            
-            if (file.exists(parameters_file) == F) {
-              next
-            }
-            
-            # Read in parameter data
-            parameters <- read.csv(parameters_file)
-            
-            # Input new data for dataframe
-            # parameters["Target"] <- species %in% target
-            parameters["Range"] <- range
-            parameters["Threshold"] <- thresh
-            
-            # Add parameter data to general dataframe
-            parameter_df <- rbind(parameter_df, parameters)
+          model_file <- paste0(cur_path, species, "_AIC.csv")
+          
+          if (file.exists(model_file) == F) {
+            next
           }
+          
+          print(model_file)
+          
+          # Read in data
+          cur_file <- read.csv(model_file)
+          
+          # Input new data for dataframe
+          cur_file["Species"] <- species
+          # cur_file["Target"] <- species %in% target
+          cur_file["Range"] <- range
+          cur_file["By"] <- type
+          cur_file["City"] <- city
+          cur_file["Threshold"] <- thresh
+          
+          # Add model data to general dataframe
+          df <- rbind(df, cur_file)
+          
+          best_row <- cur_file[which.min(cur_file$AIC), ]
+          best_model <- best_row$model
+          
+          row_out <- data.frame(
+            Species = species,
+            City = city,
+            Threshold = thresh,
+            model = best_model
+          )
+          
+          models_df <- rbind(models_df, row_out)
+          
+          parameters_file <- paste0(cur_path, species, "_Model_Estimates.csv")
+          
+          if (file.exists(parameters_file) == F) {
+            next
+          }
+          
+          # Read in parameter data
+          parameters <- read.csv(parameters_file)
+          
+          # Input new data for dataframe
+          # parameters["Target"] <- species %in% target
+          parameters["Range"] <- range
+          parameters["Threshold"] <- thresh
+          
+          # Add parameter data to general dataframe
+          parameter_df <- rbind(parameter_df, parameters)
         }
       }
     }
@@ -179,7 +170,7 @@ for(city in cities) {
   df <- df %>%
     select(Species, 
            # Target, 
-           City, Range, By, Threshold, Treatment, model, npar, AIC, delta, AICwt, cumltvWt)
+           City, Range, By, Threshold, model, npar, AIC, delta, AICwt, cumltvWt)
   
   models_df <- models_df %>%
     select(Species, City, Threshold, model)
@@ -187,7 +178,7 @@ for(city in cities) {
   parameter_df <- parameter_df %>%
     select(Species, 
            # Target, 
-           City, Range, By, Threshold, Treatment, Model, parameter, Est, SE, lower, upper, p)
+           City, Range, By, Threshold, Model, parameter, Est, SE, lower, upper, p)
   
   output_path <- paste0(filepath, city, "/")
   
@@ -215,7 +206,6 @@ all_city_parameters <- data.frame(
   Range = character(),
   By = character(),
   Threshold = numeric(),
-  Treatment = character(),
   Model = character(),
   parameter = character(),
   Est = numeric(),
