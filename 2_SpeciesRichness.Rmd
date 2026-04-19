@@ -359,6 +359,7 @@ cities <- c(
   "ININ",
   "JAMS",
   "PACA",
+  "BOMA",
   "SLMO",
   "TAWA",
   "URIL"
@@ -435,13 +436,13 @@ for (city_name in cities) {
     # Read the linear model results for this threshold
     results_path <- paste0(output_path_name, "lm_results.csv")
     
-    richness_path <- paste0(output_path_name, "richness.csv")
+    richness_file_path <- paste0(output_path_name, "richness.csv")
     
     if (file.exists(results_path) == F) {
       next
     }
     
-    if (file.exists(richness_path) == F) {
+    if (file.exists(richness_file_path) == F) {
       next
     }
     
@@ -452,7 +453,7 @@ for (city_name in cities) {
     
     city_results <- rbind(city_results, cur_file)
     
-    cur_richness_file <- read.csv(richness_path)
+    cur_richness_file <- read.csv(richness_file_path)
     
     cur_richness_file$City <- city_name
     cur_richness_file$Threshold <- threshold_value
@@ -507,13 +508,13 @@ for (city_name in cities) {
   
   results_path <- paste0(city_path, "lm_results_all_thresholds.csv")
   
-  richness_path <- paste0(city_path, "richness_all_thresholds.csv")
+  richness_file_path <- paste0(city_path, "richness_all_thresholds.csv")
   
   if (file.exists(results_path) == F) {
     next
   }
   
-  if (file.exists(richness_path) == F) {
+  if (file.exists(richness_file_path) == F) {
     next
   }
   
@@ -521,7 +522,7 @@ for (city_name in cities) {
   
   all_results <- rbind(all_results, cur_file)
   
-  cur_richness_file <- read.csv(richness_path)
+  cur_richness_file <- read.csv(richness_file_path)
   
   all_richness_results <- rbind(all_richness_results, cur_richness_file)
 }
