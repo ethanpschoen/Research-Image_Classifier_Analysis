@@ -30,8 +30,6 @@ library(autoOcc)
 ## Open other required packages
 
 ```{r}
-# TODO: review comments
-
 library(ggplot2)
 library(dplyr)
 library(tidyr)
@@ -108,14 +106,6 @@ glaa <- read.csv(paste0(filepath, "Species Occupancy/", location, "/Conf. ",
 ## Summarize the occupancy data by week
 - This is particularly important if your species has low detection rates
 ```{r}
-#### CHANGES
-non_na_count <- colSums(!is.na(glaa) & grepl("^Day_", names(glaa)))
-
-#glaa <- glaa %>%
-#  select(-matches("^Day_(1[0-4]|[1-9])$"), # To drop columns from Day_1 to Day_14
-#         -matches("^Day_(5[0-9]|6[0-9]|60)$")) # To drop columns from Day_48 to Day_60
-
-
 ## Convert Day data into Week Data
 glaa <- glaa %>%
   rowwise() %>%
@@ -268,17 +258,15 @@ day_sums <- glaa.original %>%
 
 ```{r}
 
-# TODO: clean up and comment
-
 spp <- species
 
+# Build detection histories using either Day_ or Week_ columns.
 species_det_hist <- glaa %>%
   select(c(Species, Site, Season, Month, starts_with(paste0(type, "_"))))
 species_det_hist <- as.data.frame(species_det_hist)
 
+# Keep one row per site for occupancy/detection covariates.
 species_covariates <- unique(glaa[, c("Site", "Impervious")])
-
-table(species_det_hist$Species)
 
 species_y <- autoOcc::format_y(
   x = species_det_hist,
@@ -312,6 +300,7 @@ oc_scaled <- as.data.frame(
 
 oc_scaled <- oc_scaled[, -1, drop = FALSE]
 
+# Fit a null model and an Impervious model; allow workflow to continue if one fails.
 skipM1 <- FALSE
 tryCatch({
   m1 <- auto_occ(
@@ -406,190 +395,5 @@ for(i in names_list){
 
   ggsave(paste0(output_path, i, ".jpg"), units="in", height=5, width=4, dpi=600)
 }
-
-# species_det_hist <- glaa %>%
-#   dplyr::select(c(Species, Site, Season, Month, starts_with(paste0(type, "_"))))
-# species_det_hist <- as.data.frame(species_det_hist)
-# species_covariates <- unique(glaa[,c("Site", "Impervious", "Treatment")])
-# 
-# table(species_det_hist$Species)
-
-# function to generate detection history
-#  for the opossum data, opossum_y is
-#  a site by primary sampling period by secondary 
-#  sampling period array.
-
-# species_y <- autoOcc::format_y(
-#   x = species_det_hist,
-#   site_column = "Site",
-#   time_column = "Season",
-#   history_columns = paste0("^", type)
-# )
-
-# scale the covariates for analysis
-
-# oc_scaled <- as.data.frame(
-#   lapply(
-#     species_covariates,
-#     function(x){
-#       if(is.numeric(x)){
-#         scale(x)
-#       }else{
-#         x
-#       }
-#     }
-#   )
-# )
-
-# dropping site column from oc_scaled
-
-# oc_scaled <- oc_scaled[,-1]
-
-#oc_scaled <- data.frame(Impervious = oc_scaled) #only need if only one variable in oc_scaled
-
-# season_frame <- list(
-#   Precipitation = matrix(
-#     species_det_hist$Precipitation,
-#     nrow = length(unique(species_det_hist$Site)),
-#     ncol = length(unique(species_det_hist$Season))
-#   ),
-#   Impervious = oc_scaled$Impervious
-# )
-# 
-# ##turn into a factor rather than character
-# unique_seasons <- as.vector(
-#   unique(
-#     species_det_hist$Precipitation
-#   )
-# )
-# 
-# season_frame$Precipitation <- as.data.frame(season_frame$Precipitation)
-# 
-# # make each column into a factor with the appropriate levels
-# season_frame$Precipitation <- as.data.frame(
-#   lapply(
-#     season_frame$Precipitation,
-#     function(x) factor(x, levels = unique_seasons)
-#   )
-# )
-# 
-
-
-# This temporal covariate is categorical and varies by primary sampling period,
-#  as such, the first column of this matrix is full of "JA19", the second is
-#  full of "AP19", etc. etc.
-# head(season_frame$Precipitation)
-
-# m1 <- auto_occ(
-#   ~1~1,
-#   y = species_y,
-#   det_covs = oc_scaled,
-#   occ_covs = oc_scaled
-# )
-# 
-# m2 <- auto_occ(
-#   ~Impervious~Impervious,
-#   y = species_y,
-#   det_covs = oc_scaled,
-#   occ_covs = oc_scaled
-# )
-# 
-# # compare models
-# my_aic_results <- compare_models(
-#   list(m1, m2),
-#   digits = 2
-# )
-
-# write.csv(my_aic_results, paste0(output_path, spp, "_AIC.csv"), row.names=F, quote=F)
-# 
-# cat(capture.output(summary(m1)), file=paste0(output_path, spp, ".txt"), sep="\n", append=FALSE)
-# cat(capture.output(summary(m2)), file=paste0(output_path, spp, ".txt"), sep="\n", append=TRUE)
-# 
-# m1_results <- m1@estimates %>%
-#   mutate(Model = "m1")
-# 
-# m2_results <- m2@estimates %>%
-#   mutate(Model = "m2")
-# 
-# models <- bind_rows(m1_results, m2_results) %>%
-#   mutate(Species = species, By = type, City = location)
-# 
-# write.csv(models, paste0(output_path, spp, "_Model_Estimates.csv"), row.names=F)
-
-# first make the prediction data.frame with a realistic
-#   range based on the actual data and not the scaled data.
-#   The range(oc$Impervious) is about 0 to 81, so choose 0
-#   to 80. We do this so that we have nice numbers for plotting.
-#   Likewise, we scaled all of the other data, so we leave Income
-#   at it's mean (i.e., 0) for predictions.
-
-# imperv_seq <- seq(0,ceiling(max(glaa2$Impervious)),1)
-# season_levels <- unique(oc_scaled$Treatment)
-# imperv_real <- data.frame(
-#   Impervious = rep(
-#     imperv_seq,
-#     length(season_levels)
-#   ),
-#   Treatment = factor(
-#     rep(season_levels,
-#         each = length(imperv_seq)
-#     ),
-#     levels = season_levels
-#   )
-# )
-
-
-# imperv_scaled <- imperv_real
-
-# imperv_scaled$Impervious <- (
-#   imperv_scaled$Impervious - mean(species_covariates$Impervious)
-# ) / sd(species_covariates$Impervious)
-# 
-# for(i in c("m1", "m2")){
-#   print(i)
-#   set.seed(13)
-#   # the model prediction across a gradient of Impervious cover
-#   opo_imperv <- predict(
-#     object = get(i), #m3, #get(my_aic_results[1,1]),
-#     type = "psi",
-#     newdata = imperv_scaled
-#   )
-#   
-#   # add on the covariate data
-#   opo_imperv <- data.frame(
-#     opo_imperv,
-#     imperv_real
-#   )
-#   
-#   
-#   # plot it out
-#   
-#   ggplot()+
-#     geom_line(data=opo_imperv, aes(x=Impervious, y=estimate, color=Treatment))+
-#     geom_ribbon(data=opo_imperv, 
-#                 aes(x=Impervious, ymin=lower,ymax=upper, fill=Treatment), alpha=0.25)+
-#     scale_color_manual(values=c("red", "dodgerblue"))+
-#     scale_fill_manual(values=c("red", "dodgerblue"))+
-#     geom_point(data=glaa2, aes(x=Impervious, y=Summary, shape=Treatment),
-#                 alpha=0.25)+
-#     facet_grid(.~Treatment)+
-#     theme_bw()+
-#     ylab("Occupancy")+
-#     xlab("Impervious Cover (%)")+
-#     ggtitle(i)+
-#     ylim(0,1)
-#   
-#   ggsave(paste0(output_path, i, ".jpg"), units="in", height=5, width=6, dpi=600)
-#   rm(opo_imperv)
-# }
-
-#my_aic_results <- my_aic_results
-#}
-
-#autoocc.out <- lapply(speciesList, autoocc.fun)
-
-
-
-
 ```
 

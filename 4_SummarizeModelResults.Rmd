@@ -8,8 +8,6 @@ This file collects the model results
 
 ```{r}
 
-# TODO: cleanup
-
 library(dplyr)
 library(tidyr)
 library(lubridate)
@@ -230,21 +228,3 @@ for (city in cities) {
 write.csv(all_city_parameters, paste0(filepath, "/all_parameters.csv"))
 
 ```
-
-```{r}
-
-# for (city in cities) {
-#   cur_path <- paste0("../Output/", city, "/")
-#   
-#   if (dir.exists(cur_path) == F) {
-#     next
-#   }
-#   
-#   print(city)
-#   
-#   render("../R Files/Model Results.Rmd",
-#          params = list(path = cur_path, location = city))
-# }
-
-```
-

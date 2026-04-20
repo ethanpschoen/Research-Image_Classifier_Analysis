@@ -9,8 +9,6 @@ This file runs the species richness models
 
 ```{r}
 
-# TODO: add comments
-
 library(dplyr)
 library(tidyr)
 library(ggplot2)
@@ -25,6 +23,7 @@ library(googlesheets4)
 
 ```{r}
 
+# Standardize species column and join clustered site IDs for site-level analyses.
 load_file <- function(file, city, camera_sites_file) {
   photos <- file %>%
     rename("Species" = "commonName")
@@ -52,6 +51,7 @@ load_file <- function(file, city, camera_sites_file) {
 
 ```{r}
 
+# Keep only detections at/above the requested confidence threshold.
 filter_threshold <- function(file, threshold) {
   file <- file %>%
     filter(maxDetectionConf >= threshold)
@@ -65,6 +65,7 @@ filter_threshold <- function(file, threshold) {
 ```{r}
 
 convert_timestamp <- function(file) {
+  # Keep UTC timestamp plus month and year-month fields for temporal summaries.
   file$TimestampUTC <- file$Timestamp
   file$TimestampUTC <- as.POSIXct(file$TimestampUTC,
                                            format="%Y-%m-%dT%H:%M:%OSZ", tz="UTC")
@@ -102,10 +103,6 @@ split_photos <- function(file) {
   # Step 4: Combine all together
   spp_detections <- bind_rows(without_underscores, split_rows) %>%
     select(-row_id)  # remove temp ID column if desired
-  
-  # TODO: is this necessary?
-  rm(without_underscores)
-  rm(split_rows)
   
   return(spp_detections)
 }
@@ -188,6 +185,7 @@ total_species <- function(file) {
 ```{r}
 
 create_dirs <- function(file, output_path) {
+  # Create one output directory per clustered site plus a pooled "ALL" directory.
   site_list <- c("ALL", unique(file$locAbbr2))
   for(i in site_list){
     dir.create(paste0(output_path, "Sites/", i), recursive = TRUE, showWarnings = FALSE)
@@ -203,6 +201,7 @@ Bar chart of number of observations of each species
 ```{r}
 
 num_observations <- function(site_list, file, output_path) {
+  # Save species frequency barplots for each site and all sites combined.
   for(i in site_list){
     plot_data <- if(i == "ALL") file else subset(file, locAbbr2 == i)
     
@@ -230,6 +229,7 @@ num_observations <- function(site_list, file, output_path) {
 ```{r}
 
 species_accumulation_curve <- function(site_list, file, output_path) {
+  # Run iNEXT abundance-based richness estimation for each site.
   for(i in site_list){
     print(i)
     species.vec1 <- if(i == "ALL") file else subset(file, locAbbr2 == i)
@@ -237,7 +237,6 @@ species_accumulation_curve <- function(site_list, file, output_path) {
     if(nrow(species.vec1) > 0) {
       species.vec <- table(species.vec1$Species) ##abundance
       
-      # TODO: look into Season as variable
       abundance.out.inext <- iNEXT(as.vector(species.vec), q=0, datatype="abundance")
       
       results <- abundance.out.inext$AsyEst
@@ -301,6 +300,7 @@ combine_results <- function(output_path) {
 ```{r}
 
 merge_impervious <- function(file, richness_file, output_path) {
+  # Attach site-level imperviousness to richness summary rows.
   camera_sites <- file %>%
     select(locAbbr2, Impervious) %>%
     distinct(locAbbr2, .keep_all = TRUE)
@@ -317,6 +317,7 @@ merge_impervious <- function(file, richness_file, output_path) {
 ```{r}
 
 evaluate_results <- function(file, output_path) {
+  # Generate richness vs. impervious plots and save linear model coefficients.
   ggplot(data=file, aes(x=Impervious, y=Estimator))+
     geom_point()+
     stat_smooth(method="lm")+
@@ -379,6 +380,7 @@ for (city_name in cities) {
   city_photos <- all_photos %>%
     filter(City == city_name)
   for (threshold_value in thresholds) {
+    # Execute the full richness pipeline for each city-threshold combination.
     output_path_name <- paste0(richness_path, city_name, "/Conf. ", threshold_value, "/")
     
     print(paste("City:", city_name))
@@ -431,6 +433,7 @@ for (city_name in cities) {
   )
   
   for (threshold_value in thresholds) {
+    # Read and stack per-threshold outputs into city-level summary tables.
     output_path_name <- paste0(richness_path, city_name, "/Conf. ", threshold_value, "/")
     
     # Read the linear model results for this threshold
@@ -504,6 +507,7 @@ all_richness_results <- data.frame(
 )
 
 for (city_name in cities) {
+  # Read city-level summary files and combine to all-city outputs.
   city_path <- paste0(richness_path, city_name, "/")
   
   results_path <- paste0(city_path, "lm_results_all_thresholds.csv")

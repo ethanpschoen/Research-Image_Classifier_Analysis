@@ -2,7 +2,6 @@ This file parses each city photo database CSV, handles comma parsing inside `{}`
 fields, adds season labels, and writes one combined cleaned output.
 
 ```{r}
-# TODO: add comments
 
 library(dplyr)
 library(lubridate)
@@ -13,6 +12,7 @@ library(lubridate)
 
 input_path <- "../Input Data/"
 
+# Cities expected to have photo database exports in `input_path`.
 cities <- c(
   "AUTX",
   "BOMA",
@@ -30,6 +30,7 @@ cities <- c(
 
 ```{r}
 
+# Split CSV fields while preserving commas inside {...} list-style fields.
 split_outside_list <- function(line) {
   fields <- c()
   buffer <- ""
@@ -81,6 +82,7 @@ season_dates <- data.frame(
                        "2026-02-13"))
 )
 
+# Map each observation date to the seasonal index used downstream.
 get_season <- function(timestamp) {
   for (i in seq_len(nrow(season_dates))) {
     if (timestamp >= season_dates$start_date[i] && timestamp <= season_dates$end_date[i]) {
@@ -94,17 +96,20 @@ get_season <- function(timestamp) {
 
 ```{r}
 
+# Parse one city file and keep only occupancy-relevant columns.
 clean_city <- function(city) {
   file_path <- paste0(input_path, "photo_database_fin_", city, ".csv")
 
   lines <- readLines(file_path)
 
+  # First line is header; remaining lines are parsed row-wise.
   header <- strsplit(lines[1], ",")[[1]]
   header <- gsub("^\"|\"$", "", header)
   parsed <- do.call(rbind, lapply(lines[-1], split_outside_list))
   parsed <- as.data.frame(parsed, stringsAsFactors = FALSE)
   colnames(parsed) <- header
 
+  # Keep only fields needed in occupancy and richness workflows.
   keep <- c("locAbbr", "Timestamp", "commonName", "maxDetectionConf")
   parsed <- parsed[keep]
   parsed <- parsed[parsed$Timestamp != "NA", ]
@@ -114,6 +119,7 @@ clean_city <- function(city) {
   parsed$commonName <- gsub("^\"|\"$", "", parsed$commonName)
   parsed$City <- city
 
+  # Convert timestamps to Date and attach standardized season values.
   parsed <- parsed %>%
     mutate(
       Timestamp = as.Date(Timestamp),
@@ -129,8 +135,10 @@ clean_city <- function(city) {
 
 city_dfs <- lapply(cities, clean_city)
 
+# Bind one standardized table across all cities.
 multi_city_data_cleaned <- bind_rows(city_dfs)
 
+# Combined cleaned file consumed by occupancy/richness scripts.
 write.csv(
   multi_city_data_cleaned,
   paste0(input_path, "multi_city_data_cleaned.csv"),

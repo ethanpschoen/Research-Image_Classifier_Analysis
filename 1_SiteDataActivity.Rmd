@@ -2,7 +2,6 @@ This file standardizes activity histories, clusters nearby sites, and writes
 all-city active dates plus site impervious metadata.
 
 ```{r}
-# TODO: add comments
 
 library(dplyr)
 library(tidyr)
@@ -17,6 +16,7 @@ library(terra)
 
 input_path <- "../Input Data/"
 
+# Seasonal lookup used to align all data sources to a shared 1..41 season index.
 season_dates <- data.frame(
   Season = 1:41,
   season_name = c("JA16", "AP16", "JU16", "OC16",
@@ -62,6 +62,7 @@ all_day_cols <- paste0("Day_", 1:60)
 
 multi_city_raw <- read.csv(paste0(input_path, "zellmer_observation_history.csv"))
 
+# Standardize city/site columns and clean known malformed records.
 multi_city_activity <- multi_city_raw %>%
   rename(locAbbr = Site, Longitude = Long, Latitude = Lat) %>%
   filter(City != "mela") %>%
@@ -81,13 +82,16 @@ multi_city_activity$Latitude = ifelse(
   multi_city_activity$Latitude
 )
 
+# Recode season labels (e.g., "JA16") to numeric season IDs used throughout the pipeline.
 season_lookup <- setNames(season_dates$Season, season_dates$season_name)
 multi_city_activity$Season <- as.integer(unname(season_lookup[multi_city_activity$Season]))
 
+# Keep one coordinate record per city-site for joining after grid expansion.
 site_info_multi <- multi_city_activity %>%
   select(City, locAbbr, Longitude, Latitude) %>%
   distinct(City, locAbbr, .keep_all = TRUE)
 
+# Build a complete site x season scaffold so missing visits are represented explicitly.
 complete_rows_multi <- expand_grid(
   locAbbr = unique(multi_city_activity$locAbbr),
   Season = season_dates$Season
@@ -95,12 +99,14 @@ complete_rows_multi <- expand_grid(
   left_join(site_info_multi, by = "locAbbr") %>%
   filter(City %in% multi_city_activity$City)
 
+# Join observed records onto the scaffold and convert Day_* values to active/inactive booleans.
 multi_city_complete <- complete_rows_multi %>%
   left_join(multi_city_activity, by = c("Season", "City", "locAbbr", "Latitude", "Longitude")) %>%
   mutate(across(starts_with("Day_"), ~ !is.na(.))) %>%
   select(Season, City, locAbbr, Latitude, Longitude, starts_with("Day_"))
 
 missing_day_cols_multi <- setdiff(all_day_cols, names(multi_city_complete))
+# Keep day columns consistent across all city-season tables before binding.
 for (col_name in missing_day_cols_multi) {
   multi_city_complete[[col_name]] <- FALSE
 }
@@ -115,6 +121,7 @@ multi_city_complete <- multi_city_complete %>%
 paca_raw <- read.csv(paste0(input_path, "OccupancyReport - Active Dates.csv"), skip = 2)
 paca_start_date <- as.Date("2018-09-15")
 
+# Convert PACA activity history to long format, map dates to seasons, then pivot back.
 paca_daily <- paca_raw %>%
   mutate(across(starts_with("Day_"), ~ case_when(
     is.na(.) ~ "Inactive",
@@ -140,6 +147,7 @@ get_season <- function(timestamp) {
   season_dates$Season[idx[1]]
 }
 
+# Assign season IDs, compute day-within-season, and retain only in-season days.
 paca_by_season <- paca_daily %>%
   mutate(Season = vapply(date, get_season, integer(1))) %>%
   drop_na(Season) %>%
@@ -150,25 +158,30 @@ paca_by_season <- paca_daily %>%
   filter(relative_day >= 1 & relative_day <= 60) %>%
   select(Season, locAbbr, Latitude, Longitude, relative_day, Status)
 
+# Convert long day records to wide Day_1...Day_60 columns and attach city code.
 paca_wide <- paca_by_season %>%
   pivot_wider(names_from = relative_day, values_from = Status, names_prefix = "Day_") %>%
   mutate(City = "PACA")
 
+# Preserve one coordinate row per PACA site for full season-grid expansion.
 site_info_paca <- paca_wide %>%
   select(City, locAbbr, Longitude, Latitude) %>%
   distinct(City, locAbbr, .keep_all = TRUE)
 
+# Build full PACA site x season scaffold so missing seasons are explicit.
 complete_rows_paca <- expand_grid(
   locAbbr = unique(paca_wide$locAbbr),
   Season = season_dates$Season
 ) %>%
   left_join(site_info_paca, by = "locAbbr")
 
+# Join observed activity onto scaffold; convert missing day values to inactive (FALSE).
 paca_complete <- complete_rows_paca %>%
   left_join(paca_wide, by = c("Season", "City", "locAbbr", "Latitude", "Longitude")) %>%
   mutate(across(starts_with("Day_"), ~ ifelse(is.na(.), FALSE, .))) %>%
   select(Season, City, locAbbr, Latitude, Longitude, starts_with("Day_"))
 
+# Ensure PACA table has the same Day_1...Day_60 schema as all other cities.
 missing_day_cols_paca <- setdiff(all_day_cols, names(paca_complete))
 for (col_name in missing_day_cols_paca) {
   paca_complete[[col_name]] <- FALSE
@@ -183,6 +196,7 @@ paca_complete <- paca_complete %>%
 
 normalized_activity <- bind_rows(multi_city_complete, paca_complete)
 
+# Cluster camera sites within 150 m so near-duplicate cameras share one site ID.
 site_coords <- normalized_activity %>%
   select(City, locAbbr, Longitude, Latitude) %>%
   distinct(City, locAbbr, .keep_all = TRUE) %>%
@@ -194,6 +208,7 @@ sites_utm <- st_transform(sites_sf, crs = 32611)
 neighbors <- st_is_within_distance(sites_utm, sites_utm, dist = 150)
 g <- make_empty_graph(n = nrow(sites_utm), directed = FALSE)
 
+# Build graph edges between nearby sites; connected components become clusters.
 for (i in seq_along(neighbors)) {
   for (j in neighbors[[i]]) {
     if (i < j) {
@@ -214,6 +229,7 @@ site_to_cluster <- site_coords %>%
 
 ```{r}
 
+# Replace original site IDs with cluster IDs and collapse to any-active by day.
 cluster_activity <- normalized_activity %>%
   left_join(site_to_cluster %>% select(City, locAbbr, locAbbr2), by = c("City", "locAbbr")) %>%
   group_by(Season, City, locAbbr2) %>%
@@ -233,6 +249,7 @@ cluster_points <- site_to_cluster %>%
     .groups = "drop"
   )
 
+# Compute average impervious cover within 1 km of each clustered camera location.
 impervious_raster <- rast(paste0(input_path, "Annual_NLCD_FctImp_2024_CU_C1V1.tif"))
 cluster_points_v <- vect(cluster_points, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
 cluster_points_v <- project(cluster_points_v, crs(impervious_raster))
@@ -241,6 +258,7 @@ cluster_buffers <- buffer(cluster_points_v, width = 1000)
 impervious_vals <- terra::extract(impervious_raster[[1]], cluster_buffers, fun = mean)
 cluster_points$Impervious <- impervious_vals[, 2]
 
+# Keep both original and clustered site IDs for later joins.
 camera_sites_with_impervious <- site_to_cluster %>%
   left_join(cluster_points %>% select(locAbbr2, Impervious), by = "locAbbr2")
 
@@ -248,6 +266,7 @@ camera_sites_with_impervious <- site_to_cluster %>%
 
 ```{r}
 
+# Export normalized activity histories and site-level impervious metadata.
 write.csv(cluster_activity, paste0(input_path, "all_city_active_dates.csv"), row.names = FALSE)
 write.csv(camera_sites_with_impervious, paste0(input_path, "camera_sites_with_impervious.csv"), row.names = FALSE)
 

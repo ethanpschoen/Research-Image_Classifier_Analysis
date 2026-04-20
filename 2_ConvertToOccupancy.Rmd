@@ -8,7 +8,6 @@ This file generates the species occupancy reports for occupancy modeling
 At the end, it also runs the occupancy models
 
 ```{r}
-# TODO: review comments
 
 library(dplyr)
 library(tidyr)
@@ -286,12 +285,8 @@ for (thresh in confs) {
         rename("Species" = "commonName", "SeasonNumber" = "Season", "Site" = "locAbbr") %>%
         select(Species, SeasonNumber, City, Site, starts_with("Day_"))
       
-      # TODO: is this still necessary?
-      # Change species name for file naming
-      species_name <- gsub("/", "-", species)
-      
       # Filepath specification
-      output_filename <- paste0(folder_path, "OccupancyReport - ", species_name, " - Seasonal.csv")
+      output_filename <- paste0(folder_path, "OccupancyReport - ", species, " - Seasonal.csv")
       
       # Output file for each species
       write.csv(complete_grid, output_filename, row.names = FALSE)
@@ -334,11 +329,9 @@ for (city_name in cities) {
   city_counts <- city_counts %>%
     mutate(source = factor(source, levels = rev(desired_order)))  # rev() makes df_human appear at the top
   
-  # TODO: simplify this?
-  # Plot site-seasons against species and their human vs. md data
-  count_plot <- ggplot(
-    city_counts, aes(x = count, y = species, fill = source)) +
-    geom_bar(stat = "identity", position = position_dodge(width = 0.7)) +
+  # Plot site-seasons against species across confidence thresholds.
+  count_plot <- ggplot(city_counts, aes(x = count, y = species, fill = source)) +
+    geom_col(position = position_dodge(width = 0.7)) +
     labs(
       title = "Number of Site-Seasons with Detections by Source",
       x = "Number of Site-Seasons",
@@ -346,12 +339,9 @@ for (city_name in cities) {
       fill = "Source"
     ) +
     guides(fill = guide_legend(reverse = TRUE)) +
-    theme_minimal(base_size = 12) +
+    theme_bw(base_size = 12) +
     theme(
       plot.background = element_rect(fill = "white", color = "black"),
-      panel.background = element_rect(fill = "white", color = NA),
-      panel.grid.major = element_line(color = "gray80"),
-      panel.grid.minor = element_line(color = "gray90"),
       axis.title = element_text(color = "black", size = 20),
       axis.text = element_text(color = "black", size = 12),
       legend.position = "top",
