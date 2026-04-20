@@ -225,9 +225,37 @@ num_observations <- function(site_list, file, output_path) {
 
 <https://rpubs.com/brouwern/iNEXTvVEGAN> <https://www.researchgate.net/post/How_do_I_generate_a_species_accumulation_curve_based_on_sampling_effort_for_a_camera-trap_study_using_R>
 
-## By abundance
+## By incidence frequencies
 
 ```{r}
+
+build_incidence_freq <- function(file, replicate_col) {
+  file <- file %>%
+    drop_na(.data[[replicate_col]])
+  
+  total_replicates <- length(unique(file[[replicate_col]]))
+  
+  replicates <- file %>%
+    distinct(Species, .data[[replicate_col]]) %>%
+    count(Species, name = "freq") %>%
+    filter(!is.na(freq), freq > 0)
+  
+  # Guardrails for iNEXT incidence_freq input
+  if(total_replicates < 2 || nrow(replicates) == 0) {
+    return(NULL)
+  }
+  
+  replicates <- replicates %>%
+    mutate(freq = pmin(freq, total_replicates))
+  
+  # iNEXT incidence_freq requires: c(number_of_sampling_units, species_incidence_frequencies)
+  incidence_vec <- c(total_replicates, replicates$freq)
+  
+  return(list(
+    incidence_vec = incidence_vec,
+    total_replicates = total_replicates
+  ))
+}
 
 species_accumulation_curve <- function(site_list, file, output_path) {
   for(i in site_list){
@@ -235,13 +263,45 @@ species_accumulation_curve <- function(site_list, file, output_path) {
     species.vec1 <- if(i == "ALL") file else subset(file, locAbbr2 == i)
     
     if(nrow(species.vec1) > 0) {
-      species.vec <- table(species.vec1$Species) ##abundance
+      if(i == "ALL") {
+        inc_data <- build_incidence_freq(species.vec1, "locAbbr2")
+        if(is.null(inc_data)) {
+          next
+        }
+        species.vec <- inc_data$incidence_vec
+        total_replicates <- inc_data$total_replicates
+        x_axis_label <- "Number of site replicates"
+      } else {
+        species.vec1 <- species.vec1 %>%
+          drop_na(Season)
+        
+        if(nrow(species.vec1) == 0) {
+          next
+        }
+        
+        inc_data <- build_incidence_freq(species.vec1, "Season")
+        if(is.null(inc_data)) {
+          next
+        }
+        species.vec <- inc_data$incidence_vec
+        total_replicates <- inc_data$total_replicates
+        x_axis_label <- "Number of seasonal replicates"
+      }
       
-      # TODO: look into Season as variable
-      abundance.out.inext <- iNEXT(as.vector(species.vec), q=0, datatype="abundance")
+      abundance.out.inext <- tryCatch(
+        iNEXT(species.vec, q=0, datatype="incidence_freq"),
+        error = function(e) {
+          message(paste("Skipping", i, "due to iNEXT error:", e$message))
+          return(NULL)
+        }
+      )
+      
+      if(is.null(abundance.out.inext)) {
+        next
+      }
       
       results <- abundance.out.inext$AsyEst
-      results$`Total Observations` <- sum(species.vec)
+      results$`Total Observations` <- total_replicates
       
       write.csv(results, paste0(output_path, "Sites/", i, "/species_richness_abun.csv"), row.names=T, quote=F)
       
@@ -249,7 +309,7 @@ species_accumulation_curve <- function(site_list, file, output_path) {
         theme_bw()+
         scale_x_continuous(expand = c(0, 0)) + #, limits = c(0, 62)
         ylim(0, 20) + #scale_y_continuous(expand = c(0, 20)) + #, 
-        xlab("Number of spp_detections") +
+        xlab(x_axis_label) +
         #ylab("Species diversity") +
         #labs(title= "Species Accumulation Curve")+
         scale_color_manual(values="mediumorchid")+
@@ -375,10 +435,10 @@ richness_path <- "../Richness/"
 
 all_photos <- read.csv(paste0("../Input Data/multi_city_data_cleaned.csv"))
 
-for (city_name in cities) {
+for (city_name in cities[[6]]) {
   city_photos <- all_photos %>%
     filter(City == city_name)
-  for (threshold_value in thresholds) {
+  for (threshold_value in thresholds[[1]]) {
     output_path_name <- paste0(richness_path, city_name, "/Conf. ", threshold_value, "/")
     
     print(paste("City:", city_name))
